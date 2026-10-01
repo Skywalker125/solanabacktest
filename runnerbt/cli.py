@@ -186,6 +186,9 @@ def cmd_hunt(a):
            sorted({int(k) for r in recs[:2000] for k in r.get("snapshots", {})}))
     targets = sorted({float(x) for x in a.targets.split(",")} | {a.precision})
     require = _requirements(a.require)
+    if a.skip_protocols:
+        from .strategy import merge_filters as _mf
+        require = _mf(require, {"protocol": {"not_in": [x.upper() for x in _csv_list(a.skip_protocols)]}})
     if require:
         sample = next((r["snapshots"] for r in recs if r.get("snapshots")), {})
         snap = next(iter(sample.values()), {})
@@ -271,9 +274,12 @@ def cmd_live(a):
     from .live import BuyLog, LiveDecider, SolPrice, run_socket
     from .strategy import Strategy
     s = Strategy.load(a.strategy)
+    from .strategy import merge_filters
     if a.require:
-        from .strategy import merge_filters
         s.filters = merge_filters(s.filters, _requirements(a.require))
+    if a.skip_protocols:
+        s.filters = merge_filters(s.filters, {"protocol": {"not_in": [x.upper() for x in _csv_list(a.skip_protocols)]}})
+    skipped = set((s.filters.get("protocol") or {}).get("not_in") or [])
     if s.model:
         s.get_model()  # fail now, not on the first launch, if the model file is missing
     log = BuyLog(a.log, SolPrice())
@@ -296,6 +302,8 @@ def cmd_live(a):
     #              which otherwise stall every thread (incl. the socket reader) for long stretches
     from .live import LAUNCHPADS
     protocols = None if (a.protocols or "").lower() == "all" else (_csv_list(a.protocols) or LAUNCHPADS)
+    if protocols:  # no need to stream launchpads the strategy never buys
+        protocols = [p for p in protocols if p not in skipped]
     print(f"subscribing to {', '.join(protocols) if protocols else 'all protocols'}", file=sys.stderr)
     run_socket(dec, protocols, ["buy", "sell", "create", "createPool", "migrate",
                                              "curveComplete", "remove", "claimCreatorFees"], a.url,
@@ -316,6 +324,12 @@ def cmd_bundles(a):
     from .bundles import bundle_report
     from .dataset import load_records
     print(bundle_report(load_records(a.dataset), _parse_duration(a.checkpoint)))
+
+
+def cmd_protocols(a):
+    from .bundles import protocol_report
+    from .dataset import load_records
+    print(protocol_report(load_records(a.dataset), _parse_duration(a.checkpoint), _requirements(a.require)))
 
 
 def cmd_buys(a):
@@ -426,6 +440,7 @@ def main(argv=None):
     r.add_argument("--beam", type=int, default=15)
     r.add_argument("--no-model", action="store_true", help="rules only, skip the scoring model")
     r.add_argument("--exclude", help="features rules may not use, e.g. mcap,max_mcap,launch_mcap")
+    r.add_argument("--skip-protocols", help="never buy launches from these, e.g. METEORA_DBC")
     r.add_argument("--require", nargs="+", metavar="RULE",
                    help="hard limits, e.g. launch_block_pct<=15 bundle_buyers<=3, or the preset "
                         "anti-bundle (= " + " ".join(ANTI_BUNDLE) + ")")
@@ -454,6 +469,7 @@ def main(argv=None):
     r.add_argument("--warmup", nargs="+", help="archive folder(s) to replay first, e.g. data/slim "
                                                "(gives creator-history features the same footing as the backtest)")
     r.add_argument("--horizon", default="6h", help="how long to follow tokens; match `build --horizon`")
+    r.add_argument("--skip-protocols", help="never buy launches from these, e.g. METEORA_DBC")
     r.add_argument("--trace-dir", default="data/traces", help="where raw events of bought tokens are saved")
     r.add_argument("--trace-minutes", type=float, default=30, help="keep tracing this long after a buy (0 = off)")
     r.add_argument("--require", nargs="+", metavar="RULE",
@@ -478,6 +494,12 @@ def main(argv=None):
     r.add_argument("dataset")
     r.add_argument("--checkpoint", default="10")
     r.set_defaults(fn=cmd_bundles)
+
+    r = sub.add_parser("protocols", help="per launchpad: 5x rate, bundle-limit failures, liquidity")
+    r.add_argument("dataset")
+    r.add_argument("--checkpoint", default="30")
+    r.add_argument("--require", nargs="+", default=["anti-bundle"], metavar="RULE")
+    r.set_defaults(fn=cmd_protocols)
 
     r = sub.add_parser("buys", help="bundle numbers of every buy the live run made")
     r.add_argument("--log", default="data/buys.csv")

@@ -49,6 +49,9 @@ python -m runnerbt hunt data/dataset.jsonl.gz --precision 0.3 --require anti-bun
 #    max_slot_buyers<=3, top10_hold_pct<=35 (net holdings of the top 10 wallets), dev_hold_pct<=8.
 #    Pick your own limits from the data first:
 python -m runnerbt bundles data/dataset.jsonl.gz --checkpoint 10
+#    per launchpad (5x rate, share failing the limits, liquidity backing):
+python -m runnerbt protocols data/dataset.jsonl.gz --checkpoint 30
+#    drop a launchpad everywhere with --skip-protocols METEORA_DBC (hunt and live)
 #    and check what live bought:  python -m runnerbt buys
 #    prints, for each precision target (10..50%) and each decision time, the best rule and the best
 #    model threshold: buys / runners / precision on the learning period AND on the later unseen period.

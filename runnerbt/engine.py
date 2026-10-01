@@ -98,6 +98,8 @@ class TokenState:
         self.last_mcap = None
         self.max_mcap = 0.0
         self.last_q = float(qip) if qip else None
+        self.first_q = self.last_q        # quote in the curve at launch (virtual reserves on some)
+        self.max_q = self.last_q or 0.0
         self.last_ts = self.created_ts
         self.implausible = False
 
@@ -126,6 +128,11 @@ class TokenState:
                 self.first_price = price
             self.last_price = price
             self.last_q = q
+            if q is not None:
+                if self.first_q is None:
+                    self.first_q = q
+                if self.features_open and q > self.max_q:
+                    self.max_q = q
             if price > self.max_price:
                 self.max_price = price
             # our own market cap (price x supply): the reported marketCapQuote is unreliable
@@ -275,12 +282,27 @@ class TokenState:
             "mcap": self.last_mcap or 0.0,
             "max_mcap": self.max_mcap,
             "quote_in_pool": self.last_q or 0.0,
+            **self._liquidity_features(),
             "mult_from_launch": (self.last_price / first) if first and self.last_price else 1.0,
             "drawdown_from_max": (self.last_price / self.max_price) if self.max_price and self.last_price else 1.0,
             "migrated": self.migrated,
             "curve_complete": self.curve_complete,
             "liq_removes": self.liq_removes,
             "fee_claims": self.fee_claims,
+        }
+
+    def _liquidity_features(self) -> dict:
+        """Real money behind the price. Scams show a market cap with almost no quote in the
+        curve behind it, or liquidity already falling away from its peak."""
+        q, q0 = self.last_q, self.first_q
+        if q is None or q0 is None:
+            return {"liq_added": 0.0, "liq_mcap_ratio": 0.0, "liq_drop_pct": 0.0}
+        added = q - q0
+        mcap = self.last_mcap or 0.0
+        return {
+            "liq_added": added,
+            "liq_mcap_ratio": added / mcap if mcap > 0 else 0.0,
+            "liq_drop_pct": 100.0 * (1 - q / self.max_q) if self.max_q > 0 else 0.0,
         }
 
     def _bundle_features(self, supply: float) -> dict:

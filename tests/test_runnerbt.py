@@ -342,3 +342,18 @@ def test_live_traces_bought_tokens_from_launch_to_after_the_dump(tmp_path):
     assert all(e.get("mint") == "M" for e in lines) and len(keys) == len(set(keys))
     other = (tmp_path / "OTHER.jsonl").read_text()  # OTHER is bought too, in its own file
     assert '"mint":"M"' not in other
+
+
+def test_liquidity_features():
+    p = 3e-8
+    evs = [create(100)]  # 30 quote in the curve at launch
+    for ts, q in ((105, 34.0), (110, 40.0), (115, 35.0)):  # liquidity in, then 5 pulled back out
+        e = trade(ts, "buy", p, f"T{ts}")
+        e["quoteInPool"] = q
+        evs.append(e)
+    evs.append(trade(200, "buy", p, "Z"))
+    (r,) = run(evs, checkpoints=(30,), horizon_s=1000)
+    f = r["snapshots"]["30"]
+    assert f["liq_added"] == pytest.approx(5.0)
+    assert f["liq_drop_pct"] == pytest.approx(12.5)
+    assert f["liq_mcap_ratio"] == pytest.approx(5.0 / f["mcap"])

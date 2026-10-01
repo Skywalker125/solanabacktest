@@ -21,6 +21,7 @@ NUMERIC = [
     "top1_share", "top3_share", "bundle_buyers", "bundle_share", "launch_block_pct",
     "early_slots_pct", "bundle_slot_pct", "max_slot_buyers", "top10_hold_pct", "dev_hold_pct", "holders",
     "unbought_sell_pct", "unbought_sellers", "off_curve_pct", "launch_mcap",
+    "liq_added", "liq_mcap_ratio", "liq_drop_pct",
     "mcap", "max_mcap", "quote_in_pool", "mult_from_launch", "drawdown_from_max",
     "liq_removes", "fee_claims",
 ]
