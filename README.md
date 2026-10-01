@@ -59,8 +59,8 @@ python -m runnerbt protocols data/dataset.jsonl.gz --checkpoint 30
 #    model threshold: buys / runners / precision on the learning period AND on the later unseen period.
 #    Rules must clear the target with a statistical margin (Wilson lower bound) and catch >= --min-hits.
 
-# 4a. or keep EVERY strategy with more than 5 runners at >= 30% precision (in the learning AND the
-#     unseen period by default; --judge test|train|both) and run them all live at once:
+# 4a. or keep EVERY strategy with more than 5 runners at >= 30% precision (on the
+#     learning period by default; --judge both|test also require the unseen period) and run them all:
 python -m runnerbt hunt data/dataset.jsonl.gz --save-all --require anti-bundle
 python -m runnerbt live --strategies strategies/pool --warmup data/slim
 #     each token is bought at most once (first strategy that fires; also across restarts via buys.csv)

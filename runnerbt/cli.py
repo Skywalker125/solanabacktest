@@ -349,7 +349,9 @@ def _strategy_files(a) -> list:
         else:
             files.append(p)
     if not files:
-        sys.exit(f"no strategy files in {a.strategies}")
+        sys.exit(f"no strategy files in {a.strategies}: the pool is empty. Run "
+                 f"`python -m runnerbt hunt <dataset> --save-all ...` first; its last lines say how many "
+                 f"strategies qualified (lower --pool-precision / --pool-min-hits if none did)")
     return files
 
 
@@ -536,8 +538,9 @@ def main(argv=None):
     r.add_argument("--pool-dir", default="strategies/pool")
     r.add_argument("--pool-min-hits", type=int, default=5, help="needs MORE than this many runners")
     r.add_argument("--pool-precision", type=float, default=0.3)
-    r.add_argument("--judge", choices=["test", "both", "train"], default="both",
-                   help="where the pool bar must hold: both periods (default), test = unseen period only")
+    r.add_argument("--judge", choices=["train", "both", "test"], default="train",
+                   help="where the pool bar must hold: train = learning period (default), both, or "
+                        "test = unseen period only")
     r.add_argument("--keep", type=int, help="rules kept per decision time and precision level "
                                            "(default 1, or 5 with --save-all)")
     r.add_argument("--skip-protocols", help="never buy launches from these, e.g. METEORA_DBC")

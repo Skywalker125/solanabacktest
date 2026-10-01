@@ -316,7 +316,7 @@ def format_frontier(results: list, base: dict) -> str:
     return "\n".join(lines)
 
 
-def qualifying(results: list, min_hits: int, min_precision: float, judge: str = "both") -> list:
+def qualifying(results: list, min_hits: int, min_precision: float, judge: str = "train") -> list:
     """Strategies that clear the bar. judge: 'test' (the unseen later period - honest),
     'both' (each period on its own), 'train' (learning period only - optimistic)."""
     out, seen = [], set()
@@ -330,5 +330,8 @@ def qualifying(results: list, min_hits: int, min_precision: float, judge: str = 
         if (judge == "test" and ok_test) or (judge == "train" and ok_train) or \
                 (judge == "both" and ok_test and ok_train):
             out.append(r)
-    out.sort(key=lambda r: (-r.test_hits, -r.test_precision))
+    if judge == "train":
+        out.sort(key=lambda r: (-r.train_hits, -r.train_precision))
+    else:
+        out.sort(key=lambda r: (-r.test_hits, -r.test_precision))
     return out
