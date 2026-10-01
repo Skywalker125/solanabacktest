@@ -39,8 +39,8 @@ class LiveDecider:
         self.max_late_s = 15
         self._lags: deque = deque(maxlen=500)   # wall clock - block time of recent events
         cfg = engine_cfg or EngineConfig(checkpoints=tuple(strategy.checkpoints), horizon_s=horizon_s)
-        self.engine = ReplayEngine(cfg, on_snapshot=self._on_snapshot,
-                                   on_record=lambda r: self.decided.discard(r["mint"]))
+        self.engine = ReplayEngine(cfg, on_snapshot=self._on_snapshot)
+        self.engine.on_finish = self.decided.discard
 
     def process(self, ev: dict):
         ts = ev.get("timestamp")
@@ -73,6 +73,11 @@ class LiveDecider:
             for ev in iter_events(paths):
                 self.engine.process(ev)
                 n += 1
+            # catch up to the present now, while nothing is connected: otherwise the first live
+            # event jumps the clock over the archive gap and finalises thousands of tokens at once,
+            # stalling the socket long enough for the server to drop it
+            if n:
+                self.engine.advance(int(time.time()) - 5)
         finally:
             self.silent = False
         self.decided.clear()

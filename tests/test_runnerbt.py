@@ -231,6 +231,7 @@ def test_live_after_warmup_only_decides_new_launches(tmp_path):
     dec = LiveDecider(strat, got.append)
     dec.warmup([str(tmp_path)])
     assert got == []
+    assert dec.engine.clock >= int(_time.time()) - 10  # caught up before going live: no big jump later
     now = int(_time.time())
     live = generate(n_tokens=40, hours=0.02, seed=9, start_ts=now - 30)
     for ev in live:
@@ -240,7 +241,7 @@ def test_live_after_warmup_only_decides_new_launches(tmp_path):
     for d in got:
         assert d["mint"] not in old_mints
         assert d["created_ts"] >= dec.live_start
-    assert dec.skipped_old > 0  # pending warm-up checkpoints were swallowed, not bought
+    assert "TAIL" not in {d["mint"] for d in got}  # its pending check fired silently during warm-up
 
 
 def test_tick_waits_for_stream_lag():

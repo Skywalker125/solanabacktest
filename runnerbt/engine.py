@@ -339,6 +339,7 @@ class ReplayEngine:
         self.cfg = config
         self.checkpoints = tuple(sorted(int(c) for c in config.checkpoints))
         self.on_record = on_record
+        self.on_finish: Optional[Callable[[str], None]] = None  # cheap: just the mint
         self.on_snapshot = on_snapshot
         self.on_trade = on_trade
         self.tokens: dict[str, TokenState] = {}
@@ -538,5 +539,7 @@ class ReplayEngine:
             if st.peak_mult() >= RUNNER_MULT:
                 cs[1] += 1
         self.n_records += 1
-        if self.on_record:
+        if self.on_finish:
+            self.on_finish(mint)
+        if self.on_record:  # building a record copies the price path: only when someone wants it
             self.on_record(st.to_record(self.cfg.horizon_s, complete))

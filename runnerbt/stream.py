@@ -59,7 +59,33 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
     """Connect, subscribe, and call `on_event(ev)` for every event until Ctrl+C."""
     import socketio  # python-socketio[client]
 
+    import queue
+
     st = stats or StreamStats()
+    inbox: "queue.Queue" = queue.Queue()
+
+    def handle(data):
+        for ev in unpack(data):
+            st.events += 1
+            try:
+                on_event(ev)
+            except Exception:
+                st.errors += 1
+                if st.errors <= 5:
+                    _log("event handler failed:\n" + traceback.format_exc())
+
+    def drain(seconds: float):
+        """Process queued messages for up to `seconds` (returns early when idle)."""
+        end = time.time() + seconds
+        while True:
+            left = end - time.time()
+            if left <= 0:
+                return
+            try:
+                data = inbox.get(timeout=left)
+            except queue.Empty:
+                return
+            handle(data)
     # reconnection is handled below: the server allows one stream socket per IP and refuses a
     # new subscription while it still holds the old (dead) one, so a blind auto-reconnect can
     # end up "connected" but receiving nothing
@@ -109,14 +135,9 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
         if st.messages == 1:
             kind = f"batch of {len(data)}" if isinstance(data, list) else type(data).__name__
             _log(f"first stream message received ({kind})")
-        for ev in unpack(data):
-            st.events += 1
-            try:
-                on_event(ev)
-            except Exception:
-                st.errors += 1
-                if st.errors <= 5:
-                    _log("event handler failed:\n" + traceback.format_exc())
+        # only hand over: the socket thread must stay free to answer the server's pings, and
+        # all processing happens in the main loop (one thread touches the engine)
+        inbox.put(data)
 
     @sio.on("*")
     def any_event(event, *args):
@@ -156,7 +177,7 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
     last_status = time.time()
     try:
         while True:
-            sio.sleep(tick_s)
+            drain(tick_s)
             if on_tick:
                 on_tick()
             now = time.time()
@@ -171,7 +192,13 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
                     sio.disconnect()
                 except Exception:
                     pass
-                time.sleep(wait)
+                end = time.time() + wait
+                while time.time() < end:  # keep working through what already arrived
+                    drain(min(1.0, max(0.0, end - time.time())))
+                    if time.time() < end:
+                        time.sleep(min(0.2, max(0.0, end - time.time())))
+                    if on_tick:
+                        on_tick()
                 need["reason"] = None
                 st.reconnects += 1
                 st.last_message_at = None
@@ -185,6 +212,9 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
                     extra += f", {st.reconnects} reconnects"
                 if status_extra:
                     extra += "; " + status_extra()
+                backlog = inbox.qsize()
+                if backlog > 100:
+                    extra += f", {backlog:,} messages queued (processing is falling behind)"
                 _log(f"{st.events:,} events in {st.messages:,} messages, "
                      f"{st.errors} handler errors, connected={sio.connected}{extra}")
     except KeyboardInterrupt:
