@@ -238,12 +238,25 @@ def cmd_export(a):
 
 
 def cmd_live(a):
-    from .live import LiveDecider, print_decision, run_socket
+    from .live import BuyLog, LiveDecider, SolPrice, run_socket
     from .strategy import Strategy
     s = Strategy.load(a.strategy)
-    dec = LiveDecider(s, print_decision, report_rejects=a.verbose)
+    if s.model:
+        s.get_model()  # fail now, not on the first launch, if the model file is missing
+    log = BuyLog(a.log, SolPrice())
+    dec = LiveDecider(s, log, horizon_s=_parse_duration(a.horizon), report_rejects=a.verbose)
+    print(f"strategy {s.name}: decide at {s.checkpoints}s after launch"
+          f"{f', model score >= {s.min_score:.3f}' if s.model else ''}"
+          f"{f', filters {list(s.filters)}' if s.filters else ''}", file=sys.stderr)
+    if a.warmup:
+        print(f"warming up creator history from {a.warmup} ...", file=sys.stderr)
+        n = dec.warmup(a.warmup)
+        print(f"  replayed {n:,} events", file=sys.stderr)
+    print(f"buys are appended to {os.path.abspath(a.log)}  (Ctrl+C to stop)", file=sys.stderr)
     run_socket(dec, _csv_list(a.protocols), ["buy", "sell", "create", "createPool", "migrate",
-                                             "curveComplete", "remove", "claimCreatorFees"], a.url)
+                                             "curveComplete", "remove", "claimCreatorFees"], a.url,
+               debug=a.debug)
+    print(f"{dec.buys} buys this session", file=sys.stderr)
 
 
 def cmd_replay(a):
@@ -366,11 +379,16 @@ def main(argv=None):
     r.add_argument("--out", default="data/features.csv")
     r.set_defaults(fn=cmd_export)
 
-    r = sub.add_parser("live", help="print live entry decisions (paper mode, no trading)")
-    r.add_argument("--strategy", default="strategies/default.json")
-    r.add_argument("--protocols")
+    r = sub.add_parser("live", help="run a strategy on the live stream and log every buy (paper, no orders)")
+    r.add_argument("--strategy", default="strategies/hunt.json")
+    r.add_argument("--log", default="data/buys.csv", help="CSV that every fired buy is appended to")
+    r.add_argument("--warmup", nargs="+", help="archive folder(s) to replay first, e.g. data/slim "
+                                               "(gives creator-history features the same footing as the backtest)")
+    r.add_argument("--horizon", default="6h", help="how long to follow tokens; match `build --horizon`")
+    r.add_argument("--protocols", help="default: all launchpads")
     r.add_argument("--url", default="https://sol.shrine.trade")
-    r.add_argument("-v", "--verbose", action="store_true", help="also print rejections")
+    r.add_argument("--debug", action="store_true")
+    r.add_argument("-v", "--verbose", action="store_true", help="also print rejected launches")
     r.set_defaults(fn=cmd_live)
 
     r = sub.add_parser("replay", help="run the live decider over archived events")

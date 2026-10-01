@@ -56,8 +56,11 @@ python -m runnerbt optimize data/dataset.jsonl.gz --iters 1000 --out strategies/
 # 6. optional: P(5x) scoring model, then use it as a gate in a strategy ("model" + "min_score")
 python -m runnerbt train data/dataset.jsonl.gz --checkpoint 30 --out models/model.json
 
-# 7. paper-trade live: prints enter decisions for new launches (no orders are sent)
-python -m runnerbt live --strategy strategies/optimized.json
+# 7. run the chosen strategy live: every fired buy is appended to data/buys.csv
+#    (time_utc, unix, mint, symbol, name, protocol, decided_after_s, mcap_usd, mcap_sol, price, score)
+python -m runnerbt live --strategy strategies/hunt.json --warmup data/slim
+#    --warmup replays your downloaded archive first so creator-history features match the backtest.
+#    No orders are sent.
 
 # what would the live decider have flagged on archived data?
 python -m runnerbt replay data/raw --strategy strategies/optimized.json

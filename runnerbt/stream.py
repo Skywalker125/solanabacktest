@@ -115,7 +115,20 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
     except (ValueError, AttributeError):
         pass  # not in the main thread
     _log(f"connecting to {url} ...")
-    sio.connect(url, transports=["websocket", "polling"], wait_timeout=20)
+    delay = 2.0
+    while True:  # the client only auto-reconnects after a first successful connect
+        try:
+            sio.connect(url, transports=["websocket", "polling"], wait_timeout=20)
+            break
+        except KeyboardInterrupt:
+            return st
+        except Exception as e:
+            _log(f"connect failed ({e or type(e).__name__}); retrying in {delay:.0f}s")
+            try:
+                time.sleep(delay)
+            except KeyboardInterrupt:
+                return st
+            delay = min(delay * 2, 60)
     last_status = time.time()
     try:
         while True:

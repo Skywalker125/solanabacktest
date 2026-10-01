@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -61,7 +62,13 @@ class Strategy:
     @classmethod
     def load(cls, path: str) -> "Strategy":
         with open(path) as fh:
-            return cls.from_dict(json.load(fh))
+            s = cls.from_dict(json.load(fh))
+        # a model path that doesn't exist from the current folder: try next to the strategy file
+        if s.model and not os.path.exists(s.model):
+            alt = os.path.join(os.path.dirname(os.path.abspath(path)), os.path.basename(s.model))
+            if os.path.exists(alt):
+                s.model = alt
+        return s
 
     def to_dict(self) -> dict:
         return {
