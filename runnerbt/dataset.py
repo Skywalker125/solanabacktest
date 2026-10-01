@@ -37,6 +37,8 @@ def build_dataset(inputs: Iterable[str], out_path: str, cfg: EngineConfig,
                       f"{stats['records']:,} records", file=sys.stderr)
         eng.flush()
     stats["events"] = eng.n_events
+    stats["skipped_not_sol_quoted"] = eng.n_other_quote
+    stats["skipped_implausible_launch_mcap"] = eng.n_implausible
     stats["seconds"] = round(time.time() - t_start, 1)
     return stats
 

@@ -30,10 +30,12 @@ def find_events(paths, mint: Optional[str] = None, protocol: Optional[str] = Non
 
 
 def quote_report(paths, max_creates: int = 20000) -> str:
-    """Per launchpad: which quote mints creates/trades name, and the market cap at launch."""
+    """Per launchpad + quote: create counts, and launch market cap as reported vs. computed
+    from the first trade's executed amounts (quoteAmount / tokenAmount x supply)."""
     files = list_event_files(paths)[::-1]
     creates: dict = {}
-    first_mc: dict = {}
+    reported: dict = {}
+    computed: dict = {}
     seen: dict = {}
     n_creates = 0
     for f in files:
@@ -43,21 +45,32 @@ def quote_report(paths, max_creates: int = 20000) -> str:
                 n_creates += 1
                 key = (ev.get("protocol"), ev.get("quoteMint") or "<missing>")
                 creates[key] = creates.get(key, 0) + 1
-                seen[ev.get("mint")] = ev.get("protocol")
-            elif a in ("buy", "sell") and ev.get("mint") in seen and ev.get("marketCapQuote") is not None:
-                key = (seen.pop(ev["mint"]), ev.get("quoteMint") or "<missing>")
-                first_mc.setdefault(key, []).append(float(ev["marketCapQuote"]))
+                seen[ev.get("mint")] = (ev.get("protocol"), float(ev.get("supply") or 1e9))
+            elif a in ("buy", "sell") and ev.get("mint") in seen:
+                proto, supply = seen.pop(ev["mint"])
+                key = (proto, ev.get("quoteMint") or "<missing>")
+                if ev.get("marketCapQuote") is not None:
+                    reported.setdefault(key, []).append(float(ev["marketCapQuote"]))
+                ta, qa = ev.get("tokenAmount"), ev.get("quoteAmount")
+                if ta and qa and float(ta) > 0 and len(ev.get("breakdown") or []) <= 1:
+                    computed.setdefault(key, []).append(float(qa) / float(ta) * supply)
         if n_creates >= max_creates:
             break
-    lines = [f"{'protocol':<16} {'quoteMint on create':<46} {'creates':>8}"]
-    for (p, q), c in sorted(creates.items(), key=lambda kv: -kv[1]):
-        lines.append(f"{str(p):<16} {q:<46} {c:>8}")
-    lines.append("")
-    lines.append(f"{'protocol':<16} {'quoteMint on first trade':<46} {'n':>6} {'median marketCapQuote':>22}")
-    for (p, q), xs in sorted(first_mc.items(), key=lambda kv: -len(kv[1])):
-        lines.append(f"{str(p):<16} {q:<46} {len(xs):>6} {statistics.median(xs):>22,.2f}")
-    lines.append("\nA SOL-quoted launch starts around 25-35 marketCapQuote; values in the thousands mean the "
-                 "curve is quoted in USD (or another token) whatever quoteMint says.")
+    names = {"So11111111111111111111111111111111111111112": "SOL",
+             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
+             "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB": "USD1"}
+    total = sum(creates.values()) or 1
+    sol = sum(c for (p, q), c in creates.items() if q == "So11111111111111111111111111111111111111112")
+    lines = [f"{n_creates:,} launches scanned; {sol / total:.0%} quoted in SOL (the backtest uses only those "
+             f"unless build --all-quotes)", "",
+             f"{'protocol':<16} {'quote':<46} {'launches':>8} {'reported mcap':>16} {'computed mcap':>16}"]
+    keys = sorted(creates, key=lambda k: -creates[k])[:25]
+    for k in keys:
+        rep = f"{statistics.median(reported[k]):,.2f}" if k in reported else "-"
+        com = f"{statistics.median(computed[k]):,.2f}" if k in computed else "-"
+        lines.append(f"{str(k[0]):<16} {names.get(k[1], k[1]):<46} {creates[k]:>8} {rep:>16} {com:>16}")
+    lines.append("\n(medians at the first trade, in units of the quote; a SOL launch starts around 25-35 SOL. "
+                 "The backtest uses the computed value.)")
     return "\n".join(lines)
 
 

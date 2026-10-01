@@ -62,7 +62,7 @@ def test_horizon_and_incomplete():
     by = {r["mint"]: r for r in recs}
     assert by["M"]["complete"] is True
     assert by["N"]["complete"] is True  # ts 5000 > 150 + 1000 finalises N before that trade is applied
-    assert by["N"]["path"][-1][1] != 1e-7
+    assert by["N"]["path"] == []  # its only trade came after the horizon: never applied
 
 
 def test_runner_label_and_take_profit():
@@ -256,3 +256,31 @@ def test_tick_waits_for_stream_lag():
     dec.process(trade(t0 + 9, "buy", 3e-8, "LATE"))  # a trade from before the checkpoint arrives late
     dec.tick(now=t0 + 15)
     assert len(got) == 1 and got[0]["features"]["n_buys"] == 1
+
+
+def test_price_units_and_quote_sanity():
+    # reported price 1e6 too small (wrong units) and marketCapQuote ~0: we fix both
+    p = 3e-8
+    bad = [trade(110 + i, "buy", p, f"T{i}") for i in range(5)] + [trade(200, "buy", p, "Z")]
+    for e in bad:
+        e["price"] = p / 1e6
+        e["marketCapQuote"] = 0.0
+        for leg in e["breakdown"]:
+            leg["price"] = p / 1e6
+    (r,) = run([create(100)] + bad, checkpoints=(30,), horizon_s=1000)
+    snap = r["snapshots"]["30"]
+    assert snap["mcap"] == pytest.approx(30.0, rel=0.05)   # 3e-8 SOL x 1e9 supply
+    assert r["entries"]["30"][1] == pytest.approx(p, rel=0.05)
+
+    # launches paired against another token are skipped by default ...
+    other = "XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W"
+    evs = [create(100, quoteMint=other), trade(105, "buy", p, mint="M"), trade(200, "buy", p, "Q")]
+    evs[1]["quoteMint"] = evs[2]["quoteMint"] = other
+    assert run(evs, checkpoints=(30,), horizon_s=1000) == []
+    # ... also when only the trades reveal the quote
+    evs[0].pop("quoteMint")
+    assert run(evs, checkpoints=(30,), horizon_s=1000) == []
+
+    # a "launch" that starts at thousands of SOL is mislabeled and dropped
+    big = [create(100), trade(105, "buy", 5e-5), trade(200, "buy", 5e-5, "Q")]  # 50,000 SOL mcap
+    assert run(big, checkpoints=(30,), horizon_s=1000) == []

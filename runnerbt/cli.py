@@ -62,7 +62,7 @@ def cmd_build(a):
         horizon_s=_parse_duration(a.horizon),
         path_step=a.path_step,
         include_pool_launches=not a.no_pool_launches,
-        sol_only=a.sol_only,
+        sol_only=not a.all_quotes,
         protocols=set(_csv_list(a.protocols)) if a.protocols else None,
     )
     st = build_dataset(a.input, a.out, cfg, include_incomplete=a.include_incomplete)
@@ -353,7 +353,8 @@ def main(argv=None):
     r.add_argument("--horizon", default="6h", help="how long to follow each launch")
     r.add_argument("--path-step", type=float, default=0.01)
     r.add_argument("--protocols", help="only launches from these protocols")
-    r.add_argument("--sol-only", action="store_true")
+    r.add_argument("--all-quotes", action="store_true",
+                   help="also launches paired against tokens other than SOL (their amounts are not comparable)")
     r.add_argument("--no-pool-launches", action="store_true", help="ignore createPool launches")
     r.add_argument("--include-incomplete", action="store_true")
     r.set_defaults(fn=cmd_build)

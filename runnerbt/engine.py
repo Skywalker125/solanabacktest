@@ -26,8 +26,9 @@ class EngineConfig:
     horizon_s: int = 6 * 3600                     # how long to follow each token
     path_step: float = 0.01                       # store a path point on >=1% price move
     include_pool_launches: bool = True            # treat createPool on an unseen mint as a launch
-    sol_only: bool = False                        # ignore launches not quoted in SOL
+    sol_only: bool = True                         # only launches quoted in SOL (comparable units)
     protocols: Optional[set] = None               # restrict launches to these protocols
+    max_launch_mcap: float = 3000.0               # first mcap above this (in quote) = mislabeled, dropped
 
 
 class TokenState:
@@ -79,18 +80,18 @@ class TokenState:
         self.migrate_ts: Optional[int] = None
         self.curve_complete = False
 
-        # price state
-        price0 = None
-        tip, qip = ev.get("tokensInPool"), ev.get("quoteInPool")
-        if tip and qip:
-            price0 = float(qip) / float(tip)
-        self.first_price = price0
-        self.last_price = price0
-        self.max_price = price0 or 0.0
+        # price state. The launch reserves are not used as a price: on some curves (DBC) their
+        # ratio is not the price, so the path starts at the first trade.
+        qip = ev.get("quoteInPool")
+        self.first_price = None
+        self.last_price = None
+        self.max_price = 0.0
+        self.price_scale: Optional[float] = None   # corrects a reported price in the wrong units
         self.last_mcap = None
         self.max_mcap = 0.0
         self.last_q = float(qip) if qip else None
         self.last_ts = self.created_ts
+        self.implausible = False
 
         # outputs
         self.features_open = True
@@ -99,16 +100,11 @@ class TokenState:
         self.pending_entries: list[int] = []
         self.path: list[list] = []
         self._tail: Optional[list] = None
-        if price0:
-            self.path.append([self.created_ts, price0, self.last_q])
 
     # ------------------------------------------------------------------ trades
     def on_trade(self, ev: dict, path_step: float):
         ts = ev.get("timestamp") or self.last_ts
-        price = ev.get("price")
-        if not price:
-            ta, qa = ev.get("tokenAmount"), ev.get("quoteAmount")
-            price = (float(qa) / float(ta)) if ta and qa else None
+        price = self._price(ev)
         q = ev.get("quoteInPool")
         q = float(q) if q is not None else self.last_q
         if ev.get("pool"):
@@ -118,17 +114,15 @@ class TokenState:
             self._aggregate(ev, ts)
 
         if price:
-            price = float(price)
             if self.first_price is None:
                 self.first_price = price
             self.last_price = price
             self.last_q = q
             if price > self.max_price:
                 self.max_price = price
-            mc = ev.get("marketCapQuote")
-            if mc is not None:
-                self.last_mcap = float(mc)
-                self.max_mcap = max(self.max_mcap, self.last_mcap)
+            # our own market cap (price x supply): the reported marketCapQuote is unreliable
+            self.last_mcap = price * float(self.supply or 1e9)
+            self.max_mcap = max(self.max_mcap, self.last_mcap)
             # entries for checkpoints whose decision time has passed
             if self.pending_entries:
                 for cp in self.pending_entries:
@@ -136,6 +130,27 @@ class TokenState:
                 self.pending_entries = []
             self._path_point(ts, price, q, path_step)
         self.last_ts = ts
+
+    def _price(self, ev: dict) -> Optional[float]:
+        """Post-trade price in quote per token, cross-checked against the executed amounts."""
+        reported = ev.get("price")
+        reported = float(reported) if reported else None
+        execd = None
+        legs = ev.get("breakdown") or []
+        if len(legs) <= 1:  # aggregated multi-swap totals don't give a clean execution price
+            ta, qa = ev.get("tokenAmount"), ev.get("quoteAmount")
+            if ta and qa and float(ta) > 0 and float(qa) > 0:
+                execd = float(qa) / float(ta)
+        if self.price_scale is None and reported and execd:
+            r = execd / reported
+            if 1 / 3 <= r <= 3:  # same units (post-trade vs average fill differ a little)
+                self.price_scale = 1.0
+            else:
+                e = round(math.log10(r))
+                self.price_scale = 10.0 ** e if abs(math.log10(r) - e) < 0.15 else r
+        if reported and self.price_scale is not None:
+            return reported * self.price_scale
+        return execd  # until a clean trade has confirmed the units of the reported price
 
     def _aggregate(self, ev: dict, ts: int):
         if ev.get("txSigner"):
@@ -301,6 +316,8 @@ class ReplayEngine:
         self._sig_trades: list = []
         self.n_events = 0
         self.n_records = 0
+        self.n_implausible = 0
+        self.n_other_quote = 0
 
     # --------------------------------------------------------------- driving
     def run(self, events: Iterable[dict], flush: bool = True):
@@ -400,10 +417,20 @@ class ReplayEngine:
         qm = ev.get("quoteMint")
         if qm and st.quote_mint is None:
             st.quote_mint = qm
+            if self.cfg.sol_only and qm != SOL_MINT:
+                self.n_other_quote += 1
+                self._drop(st.mint)
+                return
         elif qm and qm != st.quote_mint:
             return  # a different quote asset would break price continuity
         st.last_trade_ev = ev
+        had_price = st.first_price is not None
         st.on_trade(ev, self.cfg.path_step)
+        if not had_price and st.first_price is not None and st.last_mcap and st.last_mcap > self.cfg.max_launch_mcap:
+            # no real launch starts at thousands of SOL: the quote asset is mislabeled
+            self.n_implausible += 1
+            self._drop(st.mint)
+            return
         if self.on_trade:
             self.on_trade(st, ev)
 
@@ -419,7 +446,8 @@ class ReplayEngine:
         self.seen_mints.add(mint)
         if self.cfg.protocols and ev.get("protocol") not in self.cfg.protocols:
             return
-        if self.cfg.sol_only and ev.get("quoteMint") != SOL_MINT:
+        if self.cfg.sol_only and ev.get("quoteMint") not in (SOL_MINT, None):
+            self.n_other_quote += 1
             return
         creator = ev.get("creator") or ev.get("txSigner")
         hist = tuple(self.creator_stats.get(creator, (0, 0))) if creator else (0, 0)
@@ -439,6 +467,19 @@ class ReplayEngine:
         for tev in self._sig_trades:
             if tev.get("mint") == mint or tev.get("pool") in st.pools:
                 self._apply_trade(st, tev)
+
+    def _drop(self, mint: str):
+        """Forget a token without producing a record (it stays in seen_mints)."""
+        st = self.tokens.pop(mint, None)
+        if st is None:
+            return
+        for p in st.pools:
+            if self.pool_to_mint.get(p) == mint:
+                del self.pool_to_mint[p]
+        if st.creator in self.creator_open:
+            self.creator_open[st.creator] -= 1
+            if self.creator_open[st.creator] <= 0:
+                del self.creator_open[st.creator]
 
     def _finalise(self, mint: str, complete: bool):
         st = self.tokens.pop(mint, None)
