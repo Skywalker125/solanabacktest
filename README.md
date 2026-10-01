@@ -52,6 +52,8 @@ python -m runnerbt bundles data/dataset.jsonl.gz --checkpoint 10
 #    per launchpad (5x rate, share failing the limits, liquidity backing):
 python -m runnerbt protocols data/dataset.jsonl.gz --checkpoint 30
 #    drop a launchpad everywhere with --skip-protocols METEORA_DBC (hunt and live)
+#    never buy tokens that start high: --max-start-usd 10000 (first trade, dev buy included;
+#    converted to SOL at the current price, or --sol-usd 200)
 #    and check what live bought:  python -m runnerbt buys
 #    prints, for each precision target (10..50%) and each decision time, the best rule and the best
 #    model threshold: buys / runners / precision on the learning period AND on the later unseen period.

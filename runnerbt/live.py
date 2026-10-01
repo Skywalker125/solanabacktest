@@ -208,6 +208,11 @@ class SolPrice:
         self.refresh_s = refresh_s
         threading.Thread(target=self._run, daemon=True).start()
 
+    @classmethod
+    def fetch_once(cls) -> Optional[float]:
+        """Current SOL/USD, or None if no price source answers."""
+        return cls._fetch(cls)
+
     def _fetch(self) -> Optional[float]:
         import urllib.request
         for url, name in self.URLS:

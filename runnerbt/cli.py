@@ -176,6 +176,22 @@ def _requirements(items) -> dict:
     return out
 
 
+def _start_limit(a) -> dict:
+    """--max-start-usd -> a launch_mcap limit in SOL (market caps are recorded in SOL)."""
+    if not getattr(a, "max_start_usd", None):
+        return {}
+    sol_usd = a.sol_usd
+    if not sol_usd:
+        from .live import SolPrice
+        sol_usd = SolPrice.fetch_once()
+        if not sol_usd:
+            sys.exit("could not fetch the SOL price; pass it with --sol-usd, e.g. --sol-usd 200")
+    limit = a.max_start_usd / sol_usd
+    print(f"start limit: first-trade market cap <= ${a.max_start_usd:,.0f} = {limit:.1f} SOL "
+          f"(SOL ${sol_usd:,.2f})", file=sys.stderr)
+    return {"launch_mcap": {"max": round(limit, 2)}}
+
+
 def cmd_hunt(a):
     from .dataset import load_records, time_split
     from .hunt import best_per_target, format_frontier, hunt
@@ -186,9 +202,10 @@ def cmd_hunt(a):
            sorted({int(k) for r in recs[:2000] for k in r.get("snapshots", {})}))
     targets = sorted({float(x) for x in a.targets.split(",")} | {a.precision})
     require = _requirements(a.require)
+    from .strategy import merge_filters as _mf
     if a.skip_protocols:
-        from .strategy import merge_filters as _mf
         require = _mf(require, {"protocol": {"not_in": [x.upper() for x in _csv_list(a.skip_protocols)]}})
+    require = _mf(require, _start_limit(a))
     if require:
         sample = next((r["snapshots"] for r in recs if r.get("snapshots")), {})
         snap = next(iter(sample.values()), {})
@@ -279,6 +296,7 @@ def cmd_live(a):
         s.filters = merge_filters(s.filters, _requirements(a.require))
     if a.skip_protocols:
         s.filters = merge_filters(s.filters, {"protocol": {"not_in": [x.upper() for x in _csv_list(a.skip_protocols)]}})
+    s.filters = merge_filters(s.filters, _start_limit(a))
     skipped = set((s.filters.get("protocol") or {}).get("not_in") or [])
     if s.model:
         s.get_model()  # fail now, not on the first launch, if the model file is missing
@@ -441,6 +459,10 @@ def main(argv=None):
     r.add_argument("--no-model", action="store_true", help="rules only, skip the scoring model")
     r.add_argument("--exclude", help="features rules may not use, e.g. mcap,max_mcap,launch_mcap")
     r.add_argument("--skip-protocols", help="never buy launches from these, e.g. METEORA_DBC")
+    r.add_argument("--max-start-usd", type=float,
+                   help="never buy a token whose first trade (dev buy included) is above this market cap, "
+                        "e.g. 10000")
+    r.add_argument("--sol-usd", type=float, help="SOL price for --max-start-usd (default: fetched now)")
     r.add_argument("--require", nargs="+", metavar="RULE",
                    help="hard limits, e.g. launch_block_pct<=15 bundle_buyers<=3, or the preset "
                         "anti-bundle (= " + " ".join(ANTI_BUNDLE) + ")")
@@ -470,6 +492,10 @@ def main(argv=None):
                                                "(gives creator-history features the same footing as the backtest)")
     r.add_argument("--horizon", default="6h", help="how long to follow tokens; match `build --horizon`")
     r.add_argument("--skip-protocols", help="never buy launches from these, e.g. METEORA_DBC")
+    r.add_argument("--max-start-usd", type=float,
+                   help="never buy a token whose first trade (dev buy included) is above this market cap, "
+                        "e.g. 10000")
+    r.add_argument("--sol-usd", type=float, help="SOL price for --max-start-usd (default: fetched now)")
     r.add_argument("--trace-dir", default="data/traces", help="where raw events of bought tokens are saved")
     r.add_argument("--trace-minutes", type=float, default=30, help="keep tracing this long after a buy (0 = off)")
     r.add_argument("--require", nargs="+", metavar="RULE",
