@@ -278,6 +278,10 @@ def cmd_live(a):
         s.get_model()  # fail now, not on the first launch, if the model file is missing
     log = BuyLog(a.log, SolPrice())
     dec = LiveDecider(s, log, horizon_s=_parse_duration(a.horizon), report_rejects=a.verbose)
+    if a.trace_minutes > 0:
+        dec.trace_dir, dec.trace_s = a.trace_dir, int(a.trace_minutes * 60)
+        print(f"every bought token's raw events (launch .. +{a.trace_minutes:g} min after the buy) "
+              f"go to {os.path.abspath(a.trace_dir)}{os.sep}<mint>.jsonl", file=sys.stderr)
     print(f"strategy {s.name}: decide at {s.checkpoints}s after launch"
           f"{f', model score >= {s.min_score:.3f}' if s.model else ''}"
           f"{f', limits {s.filters}' if s.filters else ''}", file=sys.stderr)
@@ -443,6 +447,8 @@ def main(argv=None):
     r.add_argument("--warmup", nargs="+", help="archive folder(s) to replay first, e.g. data/slim "
                                                "(gives creator-history features the same footing as the backtest)")
     r.add_argument("--horizon", default="6h", help="how long to follow tokens; match `build --horizon`")
+    r.add_argument("--trace-dir", default="data/traces", help="where raw events of bought tokens are saved")
+    r.add_argument("--trace-minutes", type=float, default=30, help="keep tracing this long after a buy (0 = off)")
     r.add_argument("--require", nargs="+", metavar="RULE",
                    help="extra hard limits on top of the strategy, e.g. anti-bundle or launch_block_pct<=10")
     r.add_argument("--protocols", help="default: all launchpads")

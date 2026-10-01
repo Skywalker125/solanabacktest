@@ -66,7 +66,8 @@ python -m runnerbt train data/dataset.jsonl.gz --checkpoint 30 --out models/mode
 # 7. run the chosen strategy live: every fired buy is appended to data/buys.csv
 #    (time_local, time_utc, unix, mint, symbol, name, protocol, launch_utc, age_s, mcap_usd, mcap_sol, price, score)
 #    Only tokens launched after it connected are decided; checks wait for the stream's delay.
-#    data/buys_raw.jsonl keeps the raw launch + last trade event of every buy.
+#    data/buys_raw.jsonl keeps the raw launch + last trade event of every buy, and
+#    data/traces/<mint>.jsonl every raw event of a bought token from launch to 30 min after the buy.
 #    Reconnects by itself (also when the server refuses a duplicate connection or goes silent).
 # check what each launchpad reports as quote currency / launch market cap:
 python -m runnerbt inspect data/slim --quotes

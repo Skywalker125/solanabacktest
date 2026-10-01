@@ -38,6 +38,14 @@ class LiveDecider:
         self.skipped_late = 0                    # checkpoint evaluated too late to be honest
         self.max_late_s = 15
         self._lags: deque = deque(maxlen=500)   # wall clock - block time of recent events
+        # traces: every raw event of each bought token, from launch until trace_s after the buy,
+        # written to <trace_dir>/<mint>.jsonl (no need to wait for the hourly archive)
+        self.trace_dir: Optional[str] = None
+        self.trace_s = 1800
+        self._early: dict = {}       # mint -> (launch ts, [raw events]) for tokens not yet decided
+        self._traces: dict = {}      # mint -> block time until which events are written
+        self._sig = None
+        self._sig_evs: list = []     # trades of the current transaction (they precede its create)
         cfg = engine_cfg or EngineConfig(checkpoints=tuple(strategy.checkpoints), horizon_s=horizon_s)
         self.engine = ReplayEngine(cfg, on_snapshot=self._on_snapshot)
         self.engine.on_finish = self.decided.discard
@@ -50,10 +58,56 @@ class LiveDecider:
             if self.live_start is None:
                 self.live_start = int(ts)
             self._lags.append(time.time() - ts)
+            if self.trace_dir:
+                self._collect(ev)
         self.engine.process(ev)
 
+    # ------------------------------------------------------------------ traces
+    def _mint_of(self, ev: dict) -> Optional[str]:
+        p2m = self.engine.pool_to_mint
+        return ev.get("mint") or p2m.get(ev.get("pool")) or p2m.get(ev.get("fromPool"))
+
+    def _collect(self, ev: dict):
+        sig = ev.get("signature")
+        if sig != self._sig:
+            self._sig, self._sig_evs = sig, []
+        mint = self._mint_of(ev)
+        if ev.get("action") == "create" and mint:
+            self._early[mint] = (ev.get("timestamp") or 0, [e for e in self._sig_evs if e.get("mint") == mint] + [ev])
+        elif mint in self._early:
+            self._early[mint][1].append(ev)
+        elif ev.get("action") in ("buy", "sell"):
+            self._sig_evs.append(ev)
+        if mint in self._traces:
+            if (ev.get("timestamp") or 0) > self._traces[mint]:
+                del self._traces[mint]
+            else:
+                self._write_trace(mint, [ev])
+
+    def _write_trace(self, mint: str, evs: list):
+        os.makedirs(self.trace_dir, exist_ok=True)
+        with open(os.path.join(self.trace_dir, f"{mint}.jsonl"), "a", encoding="utf-8") as fh:
+            for e in evs:
+                fh.write(json.dumps(e, separators=(",", ":"), default=str) + "\n")
+
+    def _start_trace(self, mint: str):
+        if not self.trace_dir:
+            return
+        _ts, evs = self._early.pop(mint, (0, []))
+        self._write_trace(mint, evs)
+        self._traces[mint] = self.engine.clock + self.trace_s
+
+    def _prune_traces(self):
+        clock = self.engine.clock
+        keep_s = max(self.strategy.checkpoints) + 30
+        for m in [m for m, (t0, _) in self._early.items() if clock - t0 > keep_s]:
+            del self._early[m]
+        for m in [m for m, until in self._traces.items() if clock > until]:
+            del self._traces[m]
+
     def status(self) -> str:
-        return (f"buys {self.buys}, tracking {len(self.engine.tokens):,} launches, stream lag {self.lag():.1f}s, "
+        tr = f", tracing {len(self._traces)}" if self._traces else ""
+        return (f"buys {self.buys}{tr}, tracking {len(self.engine.tokens):,} launches, stream lag {self.lag():.1f}s, "
                 f"skipped {self.skipped_old:,} launched before start / {self.skipped_late} late")
 
     def lag(self) -> float:
@@ -93,6 +147,8 @@ class LiveDecider:
         t = (now or time.time()) - self.lag() - 1.0
         if t > self.engine.clock:
             self.engine.advance(int(t))
+        if self.trace_dir:
+            self._prune_traces()
 
     def _on_snapshot(self, st: TokenState, cp: int, feat: dict):
         if self.silent or st.mint in self.decided or cp not in self.strategy.checkpoints:
@@ -114,6 +170,7 @@ class LiveDecider:
             self.decided.add(st.mint)
         if d["enter"]:
             self.buys += 1
+            self._start_trace(st.mint)
         if d["enter"] or self.report_rejects:
             self.on_decision({
                 "mint": st.mint, "symbol": st.symbol, "name": st.name, "protocol": st.protocol,

@@ -318,3 +318,27 @@ def test_sells_of_tokens_never_bought_are_flagged():
     assert f["unbought_sell_pct"] == pytest.approx(5.0)
     assert f["unbought_sellers"] == 1
     assert f["launch_mcap"] == pytest.approx(30.0, rel=0.05)
+
+
+def test_live_traces_bought_tokens_from_launch_to_after_the_dump(tmp_path):
+    import json as _json
+    strat = Strategy.from_dict({"checkpoints": [10], "filters": {}})
+    dec = LiveDecider(strat, lambda d: None)
+    dec.trace_dir, dec.trace_s = str(tmp_path), 600
+    t0, p = 1_790_000_000, 3e-8
+    evs = [trade(t0, "buy", p, "DEV", sig="c1", block=1), create(t0, sig="c1"),
+           create(t0 + 1, mint="OTHER", sig="c2"), trade(t0 + 2, "buy", p, "OTH", mint="OTHER"),
+           trade(t0 + 5, "buy", p, "A"), trade(t0 + 12, "buy", p, "B"),     # B fires the 10s buy
+           trade(t0 + 120, "sell", p / 100, "INSIDER", quote=1.0),         # the dump, later
+           trade(t0 + 2000, "buy", p / 100, "LATE")]                       # after the trace window
+    for e in evs:
+        dec.process(e)
+    lines = [_json.loads(x) for x in (tmp_path / "M.jsonl").read_text().splitlines()]
+    keys = [(e["signature"], e["action"]) for e in lines]  # dev buy + create share one signature
+    assert lines[0]["action"] == "buy" and lines[1]["action"] == "create"  # dev buy + launch
+    assert any(e.get("txSigner") == "A" for e in lines)
+    assert any(e.get("txSigner") == "INSIDER" for e in lines)
+    assert not any(e.get("txSigner") == "LATE" for e in lines)
+    assert all(e.get("mint") == "M" for e in lines) and len(keys) == len(set(keys))
+    other = (tmp_path / "OTHER.jsonl").read_text()  # OTHER is bought too, in its own file
+    assert '"mint":"M"' not in other
