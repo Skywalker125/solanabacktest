@@ -25,6 +25,21 @@ def entry_for(record: dict, cp: int):
     return e if e and e[1] else None
 
 
+def entry_impact(entry, position: float, slippage_pct: float) -> float:
+    """Fill price / quoted price for a buy of `position` quote: pool impact + slippage."""
+    q = entry[2] if entry and len(entry) > 2 else None
+    return _buy_impact(position, q) * (1 + slippage_pct / 100.0)
+
+
+def is_runner(record: dict, cp: int, position: float = 0.5, slippage_pct: float = 1.0,
+              mult: float = RUNNER_MULT) -> Optional[bool]:
+    """Did the price reach `mult` x our actual fill (not just the quoted price)? None if untradable."""
+    lab = label(record, cp, mult)
+    if not lab:
+        return None
+    return lab["max_mult"] / entry_impact(entry_for(record, cp), position, slippage_pct) >= mult
+
+
 def label(record: dict, cp: int, mult: float = RUNNER_MULT) -> Optional[dict]:
     """Outcome after entering at checkpoint `cp` (raw prices, no costs)."""
     e = entry_for(record, cp)
@@ -112,7 +127,7 @@ def simulate_trade(record: dict, cp: int, strat: Strategy) -> Optional[dict]:
         "mint": record["mint"], "symbol": record.get("symbol"), "protocol": record.get("protocol"),
         "created_ts": record["created_ts"], "checkpoint": cp, "entry_ts": t0, "exit_ts": exit_ts,
         "entry_price": p0, "fill_price": fill, "max_mult": lab["max_mult"] if lab else max_seen / p0,
-        "runner": bool(lab and lab["runner"]), "exit_reason": exit_reason,
+        "runner": bool(lab and lab["max_mult"] * p0 / fill >= RUNNER_MULT), "exit_reason": exit_reason,
         "cost": size, "proceeds": proceeds, "pnl": pnl, "roi": pnl / size,
     }
 
@@ -126,8 +141,7 @@ def run_backtest(records: Iterable[dict], strat: Strategy, keep_trades: bool = T
         if not rec.get("complete", True):
             continue
         n_tokens += 1
-        lab = label(rec, first_cp)
-        if lab and lab["runner"]:
+        if is_runner(rec, first_cp, strat.position, strat.slippage_pct):
             n_runners += 1
         for cp in strat.checkpoints:
             feat = rec.get("snapshots", {}).get(str(cp))

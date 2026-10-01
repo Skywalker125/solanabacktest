@@ -23,9 +23,9 @@ NUMERIC = [
     "liq_removes", "fee_claims",
 ]
 BOOLEAN = ["quote_is_sol", "has_authority", "risky_extension", "dev_sold", "migrated", "curve_complete"]
-CATEGORICAL = {"protocol": ["PUMPFUN", "PUMPFUN_MAYHEM", "BONK", "STONKFUN", "METEORA_DBC",
-                            "PUMPSWAP", "RAYDIUM", "RAYDIUM_CLMM", "METEORA", "METEORA_DLMM", "ORCA"],
-               "launch_type": ["create", "pool"]}
+# Deliberately empty: the scorer is protocol-agnostic, so one model ranks launches from every
+# launchpad by behaviour (flow, holders, dev) rather than by where they launched.
+CATEGORICAL: dict = {}
 
 
 def _signed_log(x: float) -> float:

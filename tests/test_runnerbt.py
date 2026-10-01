@@ -188,3 +188,31 @@ def test_zst_files_are_readable(tmp_path):
     (d / "12.jsonl.zst").write_bytes(zstandard.ZstdCompressor().compress(b'{"action":"buy","signature":"a"}\n'))
     (tmp_path / "_slim_state.json").write_text("{}")
     assert [e["signature"] for e in iter_events([str(tmp_path)])] == ["a"]
+
+
+def test_hunt_finds_planted_signal_and_ignores_protocol():
+    pytest.importorskip("numpy")
+    from runnerbt.hunt import hunt, wilson_lower
+    from runnerbt.model import feature_names
+
+    assert not any(n.startswith(("protocol", "launch_type")) for n in feature_names())
+    assert wilson_lower(30, 100) < 0.3 < wilson_lower(60, 100)
+
+    # 1000 launches on two protocols; runners are exactly those with >= 40 unique buyers, on both
+    recs = []
+    for i in range(1000):
+        strong = i % 7 == 0
+        top = 10.0 if strong else 1.5
+        recs.append({
+            "mint": f"m{i}", "protocol": "PUMPFUN" if i % 2 else "BONK", "created_ts": i * 100,
+            "horizon_s": 3600, "complete": True,
+            "snapshots": {"30": {"unique_buyers": 40 + i % 9 if strong else i % 39, "n_buys": 50,
+                                 "protocol": "PUMPFUN" if i % 2 else "BONK"}},
+            "entries": {"30": [i * 100 + 31, 1.0, 1e9]},
+            "path": [[i * 100 + 40, top, 1e9]],
+        })
+    train, test = recs[:700], recs[700:]
+    results, _ = hunt(train, test, [30], targets=(0.5,), slippage_pct=0.0, use_model=False, log=lambda *_: None)
+    (r,) = results
+    assert any(c.feature == "unique_buyers" for c in r.conds)
+    assert r.test_hits == r.test_runners and r.test_precision >= 0.5  # every runner, above target

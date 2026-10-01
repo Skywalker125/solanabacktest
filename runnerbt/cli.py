@@ -157,6 +157,42 @@ def cmd_optimize(a):
         print(format_report(valid[0]["test"], f"{best.name} [out-of-sample]"))
 
 
+def cmd_hunt(a):
+    from .dataset import load_records, time_split
+    from .hunt import best_per_target, format_frontier, hunt
+    from .strategy import Strategy
+    recs = load_records(a.dataset)
+    train, test = time_split(recs, a.split)
+    cps = ([_parse_duration(x) for x in a.checkpoints.split(",")] if a.checkpoints else
+           sorted({int(k) for r in recs[:2000] for k in r.get("snapshots", {})}))
+    targets = sorted({float(x) for x in a.targets.split(",")} | {a.precision})
+    print(f"hunting {a.mult:g}x runners across all protocols: {len(train):,} launches to learn from, "
+          f"{len(test):,} later launches to test on; checkpoints {cps}")
+    results, base = hunt(train, test, cps, targets, mult=a.mult, position=a.position,
+                         slippage_pct=a.slippage, beam=a.beam, depth=a.depth, min_hits=a.min_hits,
+                         use_model=not a.no_model)
+    if not results:
+        sys.exit("no rule reached the precision targets; lower --min-hits or the targets, or add data")
+    print(format_frontier(results, base))
+    pick = best_per_target(results).get(a.precision)
+    if pick is None:
+        sys.exit(f"\nnothing reaches {a.precision:.0%} precision on the training period; try a lower --precision")
+    s = Strategy(name=a.name or f"hunt-{a.mult:g}x-p{int(a.precision * 100)}", checkpoints=[pick.cp])
+    if pick.kind == "model":
+        model_path = os.path.splitext(a.out)[0] + ".model.json"
+        pick.extra["model"].save(model_path)
+        s.model, s.min_score = model_path, pick.min_score
+    else:
+        s.filters = pick.filters()
+    s.save(a.out)
+    rec = pick.test_hits / pick.test_runners if pick.test_runners else 0.0
+    print(f"\nchosen for {a.precision:.0%} precision: buy at {pick.cp}s when {pick.text()}")
+    print(f"  learning period: {pick.train_n} buys, {pick.train_hits} runners ({pick.train_precision:.1%})")
+    print(f"  unseen period  : {pick.test_n} buys, {pick.test_hits} runners ({pick.test_precision:.1%} precision, "
+          f"{rec:.1%} of all {pick.test_runners} runners)")
+    print(f"saved {a.out}")
+
+
 def cmd_train(a):
     from .dataset import load_records, time_split
     from .model import LogisticModel, auc, build_xy
@@ -298,6 +334,23 @@ def main(argv=None):
     r.add_argument("--seed", type=int, default=7)
     r.set_defaults(fn=cmd_optimize)
 
+    r = sub.add_parser("hunt", help="entry-only search: most runners bought at a required precision")
+    r.add_argument("dataset")
+    r.add_argument("--precision", type=float, default=0.3, help="required share of buys that run (0.3 = 30%%)")
+    r.add_argument("--targets", default="0.1,0.2,0.3,0.4,0.5", help="precision levels to report")
+    r.add_argument("--checkpoints", help="decision ages to try, default: all in the dataset")
+    r.add_argument("--mult", type=float, default=RUNNER_MULT, help="what counts as a runner (5 = 5x)")
+    r.add_argument("--position", type=float, default=0.5, help="buy size in SOL, for price impact")
+    r.add_argument("--slippage", type=float, default=1.0, help="extra entry slippage %%")
+    r.add_argument("--split", type=float, default=0.7, help="share of the period to learn from")
+    r.add_argument("--min-hits", type=int, default=8, help="a rule must catch at least this many runners")
+    r.add_argument("--depth", type=int, default=4, help="max conditions per rule")
+    r.add_argument("--beam", type=int, default=15)
+    r.add_argument("--no-model", action="store_true", help="rules only, skip the scoring model")
+    r.add_argument("--out", default="strategies/hunt.json")
+    r.add_argument("--name")
+    r.set_defaults(fn=cmd_hunt)
+
     r = sub.add_parser("train", help="fit a P(5x) scoring model")
     r.add_argument("dataset")
     r.add_argument("--checkpoint", default="60")
@@ -327,7 +380,7 @@ def main(argv=None):
     r.set_defaults(fn=cmd_replay)
 
     a = p.parse_args(argv)
-    if getattr(a, "out", None) and a.cmd in ("train", "optimize", "export"):
+    if getattr(a, "out", None) and a.cmd in ("train", "optimize", "export", "hunt"):
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     a.fn(a)
 

@@ -39,7 +39,15 @@ python -m runnerbt build data/slim --out data/dataset.jsonl.gz --checkpoints 10,
 # 3. base rates: how many launches go 5x+ from each entry time, per protocol
 python -m runnerbt stats data/dataset.jsonl.gz
 
-# 4. backtest a strategy (in-sample vs. later out-of-sample, trades to CSV)
+# 4. THE MAIN STEP - find the entry rule that buys the most 5x runners at a required precision,
+#    across all launchpads (protocol is never used). Exits/PnL are ignored: a buy is a hit if the
+#    price reaches 5x of our actual fill (incl. price impact + slippage) within the horizon.
+python -m runnerbt hunt data/dataset.jsonl.gz --precision 0.3 --out strategies/hunt.json
+#    prints, for each precision target (10..50%) and each decision time, the best rule and the best
+#    model threshold: buys / runners / precision on the learning period AND on the later unseen period.
+#    Rules must clear the target with a statistical margin (Wilson lower bound) and catch >= --min-hits.
+
+# 4b. backtest a strategy (in-sample vs. later out-of-sample, trades to CSV)
 python -m runnerbt backtest data/dataset.jsonl.gz --strategy strategies/default.json --split 0.7 --trades data/trades.csv
 
 # 5. search filters + exits on the first 70% of time, validate on the last 30%
