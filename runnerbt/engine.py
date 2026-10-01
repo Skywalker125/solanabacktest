@@ -70,6 +70,8 @@ class TokenState:
         self.bundle_buyers: set = set()
         self.bundle_vol = 0.0
         self.launch_block_tokens = 0.0   # tokens bought in the launch block, dev included
+        self.holdings: dict[str, float] = {}   # wallet -> net tokens (buys - sells), dev included
+        self.slots: dict[int, list] = {}       # block -> [set(buyers), tokens bought] (early blocks)
         self.dev_bought_tokens = 0.0
         self.dev_sold_tokens = 0.0
         self.dev_sell_count = 0
@@ -161,7 +163,10 @@ class TokenState:
             "tokenAmount": ev.get("tokenAmount"),
             "quoteAmount": ev.get("quoteAmount"),
         }]
-        same_block = ev.get("block") is not None and ev.get("block") == self.created_block
+        block = ev.get("block")
+        same_block = block is not None and block == self.created_block
+        early = (block is not None and self.created_block is not None
+                 and 0 <= block - self.created_block <= 750)  # first ~5 minutes of slots
         for leg in legs:
             trader = leg.get("trader")
             qa = float(leg.get("quoteAmount") or 0.0)
@@ -172,6 +177,12 @@ class TokenState:
                 self.buy_vol += qa
                 if same_block:
                     self.launch_block_tokens += ta
+                if trader:
+                    self.holdings[trader] = self.holdings.get(trader, 0.0) + ta
+                    if early:
+                        slot = self.slots.setdefault(block, [set(), 0.0])
+                        slot[0].add(trader)
+                        slot[1] += ta
                 if is_dev:
                     self.dev_bought_tokens += ta
                 elif trader:
@@ -185,6 +196,8 @@ class TokenState:
                 self.sell_vol += qa
                 if trader:
                     self.sellers.add(trader)
+                    if trader in self.holdings:
+                        self.holdings[trader] -= ta
                 if is_dev:
                     self.dev_sold_tokens += ta
                     self.dev_sell_count += 1
@@ -248,6 +261,7 @@ class TokenState:
             "bundle_buyers": len(self.bundle_buyers),
             "bundle_share": (self.bundle_vol / non_dev_buy_vol) if non_dev_buy_vol else 0.0,
             "launch_block_pct": 100.0 * self.launch_block_tokens / supply if supply else 0.0,
+            **self._bundle_features(supply),
             "mcap": self.last_mcap or 0.0,
             "max_mcap": self.max_mcap,
             "quote_in_pool": self.last_q or 0.0,
@@ -257,6 +271,30 @@ class TokenState:
             "curve_complete": self.curve_complete,
             "liq_removes": self.liq_removes,
             "fee_claims": self.fee_claims,
+        }
+
+    def _bundle_features(self, supply: float) -> dict:
+        """Coordinated buying and holder concentration (what GMGN calls bundles / top 10)."""
+        cb = self.created_block
+        early_tokens = coord_tokens = 0.0
+        max_slot = 0
+        for block, (buyers, tokens) in self.slots.items():
+            n = len(buyers)
+            max_slot = max(max_slot, n)
+            if cb is not None and block - cb <= 2:
+                early_tokens += tokens
+            if n >= 3:  # 3+ wallets in one slot: a bundle, wherever it lands
+                coord_tokens += tokens
+        held = sorted((v for v in self.holdings.values() if v > 0), reverse=True)
+        dev = max(0.0, self.holdings.get(self.creator, 0.0)) if self.creator else 0.0
+        pct = 100.0 / supply if supply else 0.0
+        return {
+            "early_slots_pct": early_tokens * pct,
+            "bundle_slot_pct": coord_tokens * pct,
+            "max_slot_buyers": max_slot,
+            "top10_hold_pct": sum(held[:10]) * pct,
+            "dev_hold_pct": dev * pct,
+            "holders": len(held),
         }
 
     def peak_mult(self) -> float:
@@ -389,6 +427,8 @@ class ReplayEngine:
             if cp == self.checkpoints[-1]:
                 st.features_open = False
                 st.buyers = {}
+                st.holdings = {}
+                st.slots = {}
                 st.sellers = set()
                 st.signers = set()
                 st.recent.clear()

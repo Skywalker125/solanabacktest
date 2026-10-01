@@ -157,7 +157,9 @@ def cmd_optimize(a):
         print(format_report(valid[0]["test"], f"{best.name} [out-of-sample]"))
 
 
-ANTI_BUNDLE = ["launch_block_pct<=15", "bundle_buyers<=3", "top3_share<=0.5"]
+# Starting points; check them against your data with `python -m runnerbt bundles <dataset>`
+ANTI_BUNDLE = ["early_slots_pct<=10", "bundle_slot_pct<=10", "max_slot_buyers<=3",
+               "top10_hold_pct<=35", "dev_hold_pct<=8"]
 
 
 def _requirements(items) -> dict:
@@ -296,6 +298,17 @@ def cmd_inspect(a):
         return
     evs = list(find_events(a.input, a.mint, a.protocol, a.action, a.limit))
     print(dump(evs) if evs else "no matching events")
+
+
+def cmd_bundles(a):
+    from .bundles import bundle_report
+    from .dataset import load_records
+    print(bundle_report(load_records(a.dataset), _parse_duration(a.checkpoint)))
+
+
+def cmd_buys(a):
+    from .bundles import buys_report
+    print(buys_report(a.log))
 
 
 def cmd_replay(a):
@@ -444,6 +457,15 @@ def main(argv=None):
     r.add_argument("--action")
     r.add_argument("--limit", type=int, default=20)
     r.set_defaults(fn=cmd_inspect)
+
+    r = sub.add_parser("bundles", help="how bundling relates to 5x runners in your data (to set limits)")
+    r.add_argument("dataset")
+    r.add_argument("--checkpoint", default="10")
+    r.set_defaults(fn=cmd_bundles)
+
+    r = sub.add_parser("buys", help="bundle numbers of every buy the live run made")
+    r.add_argument("--log", default="data/buys.csv")
+    r.set_defaults(fn=cmd_buys)
 
     r = sub.add_parser("replay", help="run the live decider over archived events")
     r.add_argument("input", nargs="+")

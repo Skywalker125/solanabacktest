@@ -44,8 +44,12 @@ python -m runnerbt stats data/dataset.jsonl.gz
 #    price reaches 5x of our actual fill (incl. price impact + slippage) within the horizon.
 python -m runnerbt hunt data/dataset.jsonl.gz --precision 0.3 --require anti-bundle --out strategies/hunt.json
 #    --require sets hard limits that are never crossed, whatever the score. anti-bundle =
-#    launch_block_pct<=15 (share of supply bought in the launch block, dev included),
-#    bundle_buyers<=3, top3_share<=0.5. Custom: --require launch_block_pct<=10 dev_initial_pct<=5
+#    early_slots_pct<=10 (% of supply bought in the launch block + 2 slots after),
+#    bundle_slot_pct<=10 (% bought in slots where 3+ wallets bought together),
+#    max_slot_buyers<=3, top10_hold_pct<=35 (net holdings of the top 10 wallets), dev_hold_pct<=8.
+#    Pick your own limits from the data first:
+python -m runnerbt bundles data/dataset.jsonl.gz --checkpoint 10
+#    and check what live bought:  python -m runnerbt buys
 #    prints, for each precision target (10..50%) and each decision time, the best rule and the best
 #    model threshold: buys / runners / precision on the learning period AND on the later unseen period.
 #    Rules must clear the target with a statistical margin (Wilson lower bound) and catch >= --min-hits.

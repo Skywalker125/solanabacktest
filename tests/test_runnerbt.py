@@ -284,3 +284,23 @@ def test_price_units_and_quote_sanity():
     # a "launch" that starts at thousands of SOL is mislabeled and dropped
     big = [create(100), trade(105, "buy", 5e-5), trade(200, "buy", 5e-5, "Q")]  # 50,000 SOL mcap
     assert run(big, checkpoints=(30,), horizon_s=1000) == []
+
+
+def test_bundle_features_catch_bundles_after_the_launch_block():
+    p = 3e-8
+    evs = [create(100, block=1000)]
+    # 4 wallets in the block right after launch, each buying 2% of supply (20M tokens)
+    for i in range(4):
+        evs.append(trade(101, "buy", p, f"B{i}", quote=20_000_000 * p, block=1001))
+    # one bundler dumps everything, plus a normal buyer later
+    evs.append(trade(110, "sell", p, "B0", quote=20_000_000 * p, block=1025))
+    evs.append(trade(115, "buy", p, "N", quote=1_000_000 * p, block=1040))
+    evs.append(trade(200, "buy", p, "Z", block=1300))
+    (r,) = run(evs, checkpoints=(30,), horizon_s=1000)
+    f = r["snapshots"]["30"]
+    assert f["launch_block_pct"] == 0                      # nothing in the launch block itself...
+    assert f["early_slots_pct"] == pytest.approx(8.0)      # ...but 8% within the first slots
+    assert f["bundle_slot_pct"] == pytest.approx(8.0)
+    assert f["max_slot_buyers"] == 4
+    assert f["top10_hold_pct"] == pytest.approx(6.1)       # 3 x 2% still held + 0.1%
+    assert f["holders"] == 4
