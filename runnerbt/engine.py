@@ -41,7 +41,10 @@ class TokenState:
         self.created_block = ev.get("block")
         self.signature = ev.get("signature")
         self.pools = {p for p in (ev.get("pool"),) if p}
-        self.quote_mint = ev.get("quoteMint") or SOL_MINT
+        # None until an event names it; never assume SOL (USD-quoted curves would be off by the SOL price)
+        self.quote_mint = ev.get("quoteMint")
+        self.create_ev = ev          # raw launch event, kept for the live buy log
+        self.last_trade_ev = None
         self.creator = ev.get("creator") or ev.get("txSigner")
         self.name = ev.get("name")
         self.symbol = ev.get("symbol")
@@ -65,6 +68,7 @@ class TokenState:
         self.signers: set = set()
         self.bundle_buyers: set = set()
         self.bundle_vol = 0.0
+        self.launch_block_tokens = 0.0   # tokens bought in the launch block, dev included
         self.dev_bought_tokens = 0.0
         self.dev_sold_tokens = 0.0
         self.dev_sell_count = 0
@@ -151,6 +155,8 @@ class TokenState:
             if leg.get("action") == "buy":
                 self.n_buys += 1
                 self.buy_vol += qa
+                if same_block:
+                    self.launch_block_tokens += ta
                 if is_dev:
                     self.dev_bought_tokens += ta
                 elif trader:
@@ -226,6 +232,7 @@ class TokenState:
             "top3_share": (sum(top[:3]) / non_dev_buy_vol) if top and non_dev_buy_vol else 0.0,
             "bundle_buyers": len(self.bundle_buyers),
             "bundle_share": (self.bundle_vol / non_dev_buy_vol) if non_dev_buy_vol else 0.0,
+            "launch_block_pct": 100.0 * self.launch_block_tokens / supply if supply else 0.0,
             "mcap": self.last_mcap or 0.0,
             "max_mcap": self.max_mcap,
             "quote_in_pool": self.last_q or 0.0,
@@ -391,8 +398,11 @@ class ReplayEngine:
 
     def _apply_trade(self, st: TokenState, ev: dict):
         qm = ev.get("quoteMint")
-        if qm and qm != st.quote_mint:
+        if qm and st.quote_mint is None:
+            st.quote_mint = qm
+        elif qm and qm != st.quote_mint:
             return  # a different quote asset would break price continuity
+        st.last_trade_ev = ev
         st.on_trade(ev, self.cfg.path_step)
         if self.on_trade:
             self.on_trade(st, ev)
@@ -409,7 +419,7 @@ class ReplayEngine:
         self.seen_mints.add(mint)
         if self.cfg.protocols and ev.get("protocol") not in self.cfg.protocols:
             return
-        if self.cfg.sol_only and (ev.get("quoteMint") or SOL_MINT) != SOL_MINT:
+        if self.cfg.sol_only and ev.get("quoteMint") != SOL_MINT:
             return
         creator = ev.get("creator") or ev.get("txSigner")
         hist = tuple(self.creator_stats.get(creator, (0, 0))) if creator else (0, 0)

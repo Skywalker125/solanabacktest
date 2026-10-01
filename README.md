@@ -42,7 +42,10 @@ python -m runnerbt stats data/dataset.jsonl.gz
 # 4. THE MAIN STEP - find the entry rule that buys the most 5x runners at a required precision,
 #    across all launchpads (protocol is never used). Exits/PnL are ignored: a buy is a hit if the
 #    price reaches 5x of our actual fill (incl. price impact + slippage) within the horizon.
-python -m runnerbt hunt data/dataset.jsonl.gz --precision 0.3 --out strategies/hunt.json
+python -m runnerbt hunt data/dataset.jsonl.gz --precision 0.3 --require anti-bundle --out strategies/hunt.json
+#    --require sets hard limits that are never crossed, whatever the score. anti-bundle =
+#    launch_block_pct<=15 (share of supply bought in the launch block, dev included),
+#    bundle_buyers<=3, top3_share<=0.5. Custom: --require launch_block_pct<=10 dev_initial_pct<=5
 #    prints, for each precision target (10..50%) and each decision time, the best rule and the best
 #    model threshold: buys / runners / precision on the learning period AND on the later unseen period.
 #    Rules must clear the target with a statistical margin (Wilson lower bound) and catch >= --min-hits.
@@ -57,7 +60,12 @@ python -m runnerbt optimize data/dataset.jsonl.gz --iters 1000 --out strategies/
 python -m runnerbt train data/dataset.jsonl.gz --checkpoint 30 --out models/model.json
 
 # 7. run the chosen strategy live: every fired buy is appended to data/buys.csv
-#    (time_utc, unix, mint, symbol, name, protocol, decided_after_s, mcap_usd, mcap_sol, price, score)
+#    (time_local, time_utc, unix, mint, symbol, name, protocol, launch_utc, age_s, mcap_usd, mcap_sol, price, score)
+#    Only tokens launched after it connected are decided; checks wait for the stream's delay.
+#    data/buys_raw.jsonl keeps the raw launch + last trade event of every buy.
+#    Reconnects by itself (also when the server refuses a duplicate connection or goes silent).
+# check what each launchpad reports as quote currency / launch market cap:
+python -m runnerbt inspect data/slim --quotes
 python -m runnerbt live --strategy strategies/hunt.json --warmup data/slim
 #    --warmup replays your downloaded archive first so creator-history features match the backtest.
 #    No orders are sent.

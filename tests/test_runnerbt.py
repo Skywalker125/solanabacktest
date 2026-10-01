@@ -216,3 +216,43 @@ def test_hunt_finds_planted_signal_and_ignores_protocol():
     (r,) = results
     assert any(c.feature == "unique_buyers" for c in r.conds)
     assert r.test_hits == r.test_runners and r.test_precision >= 0.5  # every runner, above target
+
+
+def test_live_after_warmup_only_decides_new_launches(tmp_path):
+    import time as _time
+    from runnerbt.io import write_jsonl
+    old = generate(n_tokens=60, hours=1, seed=8, start_ts=int(_time.time()) - 5 * 3600)
+    # a token launched in the archive's last seconds: its 10s check is still pending when warm-up ends
+    tail_ts = max(e["timestamp"] for e in old) + 1
+    old += [create(tail_ts, mint="TAIL", sig="tail"), trade(tail_ts + 2, "buy", 3e-8, "X", mint="TAIL")]
+    write_jsonl(str(tmp_path / "old.jsonl.gz"), old)
+    strat = Strategy.from_dict({"checkpoints": [10], "filters": {}})  # buy everything
+    got = []
+    dec = LiveDecider(strat, got.append)
+    dec.warmup([str(tmp_path)])
+    assert got == []
+    now = int(_time.time())
+    live = generate(n_tokens=40, hours=0.02, seed=9, start_ts=now - 30)
+    for ev in live:
+        dec.process(ev)
+    old_mints = {e["mint"] for e in old if e.get("action") == "create"}
+    assert got, "new launches should be decided"
+    for d in got:
+        assert d["mint"] not in old_mints
+        assert d["created_ts"] >= dec.live_start
+    assert dec.skipped_old > 0  # pending warm-up checkpoints were swallowed, not bought
+
+
+def test_tick_waits_for_stream_lag():
+    strat = Strategy.from_dict({"checkpoints": [10], "filters": {}})
+    got = []
+    dec = LiveDecider(strat, got.append)
+    t0 = 1_790_000_000
+    dec.process(create(t0, block=1))
+    for _ in range(50):
+        dec._lags.append(3.0)  # the stream runs 3s behind the wall clock
+    dec.tick(now=t0 + 12.5)    # wall clock: 12.5s after launch, stream has only reached ~9.5s
+    assert got == []
+    dec.process(trade(t0 + 9, "buy", 3e-8, "LATE"))  # a trade from before the checkpoint arrives late
+    dec.tick(now=t0 + 15)
+    assert len(got) == 1 and got[0]["features"]["n_buys"] == 1

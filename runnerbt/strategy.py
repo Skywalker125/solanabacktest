@@ -32,6 +32,37 @@ DEFAULT_EXIT = {
 }
 
 
+def parse_requirement(text: str) -> tuple[str, dict]:
+    """'bundle_share<=0.3' -> ('bundle_share', {'max': 0.3}); also >=, ==, <, >."""
+    import re
+    m = re.fullmatch(r"\s*([a-z0-9_]+)\s*(<=|>=|==|<|>|=)\s*(\S+)\s*", text)
+    if not m:
+        raise ValueError(f"can't parse requirement {text!r}; use e.g. bundle_share<=0.3")
+    key, op, raw = m.groups()
+    low = raw.lower()
+    val = True if low == "true" else False if low == "false" else float(raw)
+    if op in ("<=", "<"):
+        return key, {"max": val}
+    if op in (">=", ">"):
+        return key, {"min": val}
+    return key, {"eq": val}
+
+
+def merge_filters(base: dict, extra: dict) -> dict:
+    """Combine filter dicts, keeping the stricter bound of each."""
+    out = {k: dict(v) if isinstance(v, dict) else {"eq": v} for k, v in base.items()}
+    for k, rule in extra.items():
+        cur = out.setdefault(k, {})
+        for op, v in rule.items():
+            if op == "min":
+                cur["min"] = max(cur.get("min", v), v)
+            elif op == "max":
+                cur["max"] = min(cur.get("max", v), v)
+            else:
+                cur[op] = v
+    return out
+
+
 @dataclass
 class Strategy:
     name: str = "unnamed"

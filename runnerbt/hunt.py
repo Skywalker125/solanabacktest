@@ -33,8 +33,16 @@ def wilson_lower(hits: int, n: int, z: float = 1.64) -> float:
     return (c - r) / d
 
 
-def rows_for(records, cp: int, mult: float = RUNNER_MULT, position: float = 0.5, slippage_pct: float = 1.0):
-    """(feature dicts, hit flags, max multiples) for launches tradable at checkpoint cp."""
+def rows_for(records, cp: int, mult: float = RUNNER_MULT, position: float = 0.5, slippage_pct: float = 1.0,
+             require: Optional[dict] = None):
+    """(feature dicts, hit flags, max multiples) for launches tradable at checkpoint cp.
+
+    `require` holds hard limits (strategy filter format): launches failing them are never
+    bought, so they are left out of both learning and testing."""
+    gate = None
+    if require:
+        from .strategy import Strategy
+        gate = Strategy(filters=require)
     feats, ys, mm = [], [], []
     for r in records:
         if not r.get("complete", True):
@@ -42,6 +50,8 @@ def rows_for(records, cp: int, mult: float = RUNNER_MULT, position: float = 0.5,
         f = r.get("snapshots", {}).get(str(cp))
         e = r.get("entries", {}).get(str(cp))
         if not f or not e or not e[1]:
+            continue
+        if gate and not gate.passes_filters(f)[0]:
             continue
         m = label(r, cp, mult)["max_mult"] / entry_impact(e, position, slippage_pct)
         feats.append(f)
@@ -190,14 +200,15 @@ def beam_search(np, cands, y, targets, beam: int = 12, depth: int = 4, min_hits:
 
 def hunt(train_records, test_records, checkpoints, targets=(0.1, 0.2, 0.3, 0.4, 0.5),
          mult: float = RUNNER_MULT, position: float = 0.5, slippage_pct: float = 1.0,
-         beam: int = 12, depth: int = 4, min_hits: int = 8, use_model: bool = True, log=print):
+         beam: int = 12, depth: int = 4, min_hits: int = 8, use_model: bool = True, log=print,
+         require: Optional[dict] = None):
     import numpy as np
 
     results: list[Rule] = []
     base = {}
     for cp in checkpoints:
-        f_tr, y_tr, _ = rows_for(train_records, cp, mult, position, slippage_pct)
-        f_te, y_te, _ = rows_for(test_records, cp, mult, position, slippage_pct)
+        f_tr, y_tr, _ = rows_for(train_records, cp, mult, position, slippage_pct, require)
+        f_te, y_te, _ = rows_for(test_records, cp, mult, position, slippage_pct, require)
         if not f_tr or sum(y_tr) < min_hits:
             log(f"  {cp}s: not enough runners in training data ({sum(y_tr)})")
             continue

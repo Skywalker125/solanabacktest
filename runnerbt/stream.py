@@ -48,17 +48,28 @@ class StreamStats:
         self.errors = 0
         self.other_events: dict = {}
         self.connected_at: Optional[float] = None
+        self.last_message_at: Optional[float] = None
+        self.reconnects = 0
 
 
 def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, url: str = STREAM_URL,
                on_tick: Optional[Callable[[], None]] = None, tick_s: float = 1.0,
-               status_every_s: float = 30.0, stats: Optional[StreamStats] = None, debug: bool = False):
+               status_every_s: float = 30.0, stats: Optional[StreamStats] = None, debug: bool = False,
+               status_extra: Optional[Callable[[], str]] = None, stall_s: float = 60.0):
     """Connect, subscribe, and call `on_event(ev)` for every event until Ctrl+C."""
     import socketio  # python-socketio[client]
 
     st = stats or StreamStats()
-    sio = socketio.Client(reconnection=True, reconnection_delay=1, reconnection_delay_max=30,
-                          logger=debug, engineio_logger=debug)
+    # reconnection is handled below: the server allows one stream socket per IP and refuses a
+    # new subscription while it still holds the old (dead) one, so a blind auto-reconnect can
+    # end up "connected" but receiving nothing
+    sio = socketio.Client(reconnection=False, logger=debug, engineio_logger=debug)
+    need = {"reason": None, "wait": 0.0}
+    refused = {"n": 0}
+
+    def request_reconnect(reason: str, wait: float):
+        if need["reason"] is None:
+            need["reason"], need["wait"] = reason, wait
     payload = {}
     if protocols:
         payload["protocols"] = list(protocols)
@@ -67,6 +78,14 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
 
     def on_ack(*resp):
         _log(f"subscribe_stream acknowledged: {resp!r}"[:300])
+        r = resp[0] if resp and isinstance(resp[0], dict) else {}
+        if r.get("error"):
+            refused["n"] += 1
+            # the old connection usually times out server-side within ~20-60s
+            wait = min(30.0 * refused["n"], 180.0)
+            request_reconnect(f"subscription refused ({r.get('error')})", wait)
+        else:
+            refused["n"] = 0
 
     @sio.event
     def connect():
@@ -81,11 +100,12 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
 
     @sio.event
     def disconnect(*reason):
-        _log(f"disconnected {reason or ''} - reconnecting")
+        request_reconnect(f"disconnected {reason or ''}", 2.0)
 
     @sio.on("stream")
     def on_stream(data):
         st.messages += 1
+        st.last_message_at = time.time()
         if st.messages == 1:
             kind = f"batch of {len(data)}" if isinstance(data, list) else type(data).__name__
             _log(f"first stream message received ({kind})")
@@ -114,35 +134,59 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
         signal.signal(signal.SIGTERM, _term)  # stop cleanly (files closed) on kill/timeout
     except (ValueError, AttributeError):
         pass  # not in the main thread
-    _log(f"connecting to {url} ...")
-    delay = 2.0
-    while True:  # the client only auto-reconnects after a first successful connect
-        try:
-            sio.connect(url, transports=["websocket", "polling"], wait_timeout=20)
-            break
-        except KeyboardInterrupt:
-            return st
-        except Exception as e:
-            _log(f"connect failed ({e or type(e).__name__}); retrying in {delay:.0f}s")
+    def connect_with_retry() -> bool:
+        delay = 2.0
+        while True:
             try:
-                time.sleep(delay)
+                _log(f"connecting to {url} ...")
+                sio.connect(url, transports=["websocket", "polling"], wait_timeout=20)
+                return True
             except KeyboardInterrupt:
-                return st
-            delay = min(delay * 2, 60)
+                return False
+            except Exception as e:
+                _log(f"connect failed ({e or type(e).__name__}); retrying in {delay:.0f}s")
+                try:
+                    time.sleep(delay)
+                except KeyboardInterrupt:
+                    return False
+                delay = min(delay * 2, 60)
+
+    if not connect_with_retry():
+        return st
     last_status = time.time()
     try:
         while True:
             sio.sleep(tick_s)
             if on_tick:
                 on_tick()
-            if time.time() - last_status >= status_every_s:
-                last_status = time.time()
+            now = time.time()
+            # watchdog: connected but silent means the subscription is dead
+            last = st.last_message_at or st.connected_at or now
+            if need["reason"] is None and now - last > stall_s:
+                request_reconnect(f"no events for {now - last:.0f}s", 2.0)
+            if need["reason"] is not None:
+                reason, wait = need["reason"], need["wait"]
+                _log(f"{reason} - reconnecting in {wait:.0f}s")
+                try:
+                    sio.disconnect()
+                except Exception:
+                    pass
+                time.sleep(wait)
+                need["reason"] = None
+                st.reconnects += 1
+                st.last_message_at = None
+                if not connect_with_retry():
+                    break
+                continue
+            if now - last_status >= status_every_s:
+                last_status = now
                 extra = f", other events {st.other_events}" if st.other_events else ""
+                if st.reconnects:
+                    extra += f", {st.reconnects} reconnects"
+                if status_extra:
+                    extra += "; " + status_extra()
                 _log(f"{st.events:,} events in {st.messages:,} messages, "
                      f"{st.errors} handler errors, connected={sio.connected}{extra}")
-                if st.messages == 0 and st.connected_at and time.time() - st.connected_at > 60:
-                    _log("no 'stream' messages after 60s: the subscription was not accepted or the "
-                         "endpoint changed. Run with --debug to see the raw socket traffic.")
     except KeyboardInterrupt:
         pass
     finally:

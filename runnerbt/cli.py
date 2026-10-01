@@ -157,20 +157,46 @@ def cmd_optimize(a):
         print(format_report(valid[0]["test"], f"{best.name} [out-of-sample]"))
 
 
+ANTI_BUNDLE = ["launch_block_pct<=15", "bundle_buyers<=3", "top3_share<=0.5"]
+
+
+def _requirements(items) -> dict:
+    from .strategy import merge_filters, parse_requirement
+    out: dict = {}
+    for item in items or []:
+        if item == "anti-bundle":
+            for x in ANTI_BUNDLE:
+                k, rule = parse_requirement(x)
+                out = merge_filters(out, {k: rule})
+            continue
+        k, rule = parse_requirement(item)
+        out = merge_filters(out, {k: rule})
+    return out
+
+
 def cmd_hunt(a):
     from .dataset import load_records, time_split
     from .hunt import best_per_target, format_frontier, hunt
-    from .strategy import Strategy
+    from .strategy import Strategy, merge_filters
     recs = load_records(a.dataset)
     train, test = time_split(recs, a.split)
     cps = ([_parse_duration(x) for x in a.checkpoints.split(",")] if a.checkpoints else
            sorted({int(k) for r in recs[:2000] for k in r.get("snapshots", {})}))
     targets = sorted({float(x) for x in a.targets.split(",")} | {a.precision})
+    require = _requirements(a.require)
+    if require:
+        sample = next((r["snapshots"] for r in recs if r.get("snapshots")), {})
+        snap = next(iter(sample.values()), {})
+        missing = [k for k in require if k not in snap]
+        if missing:
+            sys.exit(f"the dataset has no {missing}: it was built by an older version. Rebuild it:\n"
+                     f"  python -m runnerbt build data/slim --out {a.dataset}")
+        print(f"hard limits (never buy outside them): {require}")
     print(f"hunting {a.mult:g}x runners across all protocols: {len(train):,} launches to learn from, "
           f"{len(test):,} later launches to test on; checkpoints {cps}")
     results, base = hunt(train, test, cps, targets, mult=a.mult, position=a.position,
                          slippage_pct=a.slippage, beam=a.beam, depth=a.depth, min_hits=a.min_hits,
-                         use_model=not a.no_model)
+                         use_model=not a.no_model, require=require)
     if not results:
         sys.exit("no rule reached the precision targets; lower --min-hits or the targets, or add data")
     print(format_frontier(results, base))
@@ -184,6 +210,7 @@ def cmd_hunt(a):
         s.model, s.min_score = model_path, pick.min_score
     else:
         s.filters = pick.filters()
+    s.filters = merge_filters(s.filters, require)
     s.save(a.out)
     rec = pick.test_hits / pick.test_runners if pick.test_runners else 0.0
     print(f"\nchosen for {a.precision:.0%} precision: buy at {pick.cp}s when {pick.text()}")
@@ -241,13 +268,16 @@ def cmd_live(a):
     from .live import BuyLog, LiveDecider, SolPrice, run_socket
     from .strategy import Strategy
     s = Strategy.load(a.strategy)
+    if a.require:
+        from .strategy import merge_filters
+        s.filters = merge_filters(s.filters, _requirements(a.require))
     if s.model:
         s.get_model()  # fail now, not on the first launch, if the model file is missing
     log = BuyLog(a.log, SolPrice())
     dec = LiveDecider(s, log, horizon_s=_parse_duration(a.horizon), report_rejects=a.verbose)
     print(f"strategy {s.name}: decide at {s.checkpoints}s after launch"
           f"{f', model score >= {s.min_score:.3f}' if s.model else ''}"
-          f"{f', filters {list(s.filters)}' if s.filters else ''}", file=sys.stderr)
+          f"{f', limits {s.filters}' if s.filters else ''}", file=sys.stderr)
     if a.warmup:
         print(f"warming up creator history from {a.warmup} ...", file=sys.stderr)
         n = dec.warmup(a.warmup)
@@ -257,6 +287,15 @@ def cmd_live(a):
                                              "curveComplete", "remove", "claimCreatorFees"], a.url,
                debug=a.debug)
     print(f"{dec.buys} buys this session", file=sys.stderr)
+
+
+def cmd_inspect(a):
+    from .inspect import dump, find_events, quote_report
+    if a.quotes:
+        print(quote_report(a.input))
+        return
+    evs = list(find_events(a.input, a.mint, a.protocol, a.action, a.limit))
+    print(dump(evs) if evs else "no matching events")
 
 
 def cmd_replay(a):
@@ -360,6 +399,9 @@ def main(argv=None):
     r.add_argument("--depth", type=int, default=4, help="max conditions per rule")
     r.add_argument("--beam", type=int, default=15)
     r.add_argument("--no-model", action="store_true", help="rules only, skip the scoring model")
+    r.add_argument("--require", nargs="+", metavar="RULE",
+                   help="hard limits, e.g. launch_block_pct<=15 bundle_buyers<=3, or the preset "
+                        "anti-bundle (= " + " ".join(ANTI_BUNDLE) + ")")
     r.add_argument("--out", default="strategies/hunt.json")
     r.add_argument("--name")
     r.set_defaults(fn=cmd_hunt)
@@ -385,11 +427,22 @@ def main(argv=None):
     r.add_argument("--warmup", nargs="+", help="archive folder(s) to replay first, e.g. data/slim "
                                                "(gives creator-history features the same footing as the backtest)")
     r.add_argument("--horizon", default="6h", help="how long to follow tokens; match `build --horizon`")
+    r.add_argument("--require", nargs="+", metavar="RULE",
+                   help="extra hard limits on top of the strategy, e.g. anti-bundle or launch_block_pct<=10")
     r.add_argument("--protocols", help="default: all launchpads")
     r.add_argument("--url", default="https://sol.shrine.trade")
     r.add_argument("--debug", action="store_true")
     r.add_argument("-v", "--verbose", action="store_true", help="also print rejected launches")
     r.set_defaults(fn=cmd_live)
+
+    r = sub.add_parser("inspect", help="show raw archive events, or what each launchpad reports as quote")
+    r.add_argument("input", nargs="+", help="archive folder(s), e.g. data/slim")
+    r.add_argument("--quotes", action="store_true", help="quote mints and launch market caps per protocol")
+    r.add_argument("--mint")
+    r.add_argument("--protocol")
+    r.add_argument("--action")
+    r.add_argument("--limit", type=int, default=20)
+    r.set_defaults(fn=cmd_inspect)
 
     r = sub.add_parser("replay", help="run the live decider over archived events")
     r.add_argument("input", nargs="+")

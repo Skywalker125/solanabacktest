@@ -18,7 +18,7 @@ NUMERIC = [
     "dev_initial_buy", "dev_initial_pct", "dev_sold_pct",
     "n_buys", "n_sells", "buy_sell_ratio", "unique_buyers", "unique_sellers", "unique_signers",
     "buy_vol", "sell_vol", "net_flow", "flow_30s", "flow_60s", "buys_30s", "avg_buy",
-    "top1_share", "top3_share", "bundle_buyers", "bundle_share",
+    "top1_share", "top3_share", "bundle_buyers", "bundle_share", "launch_block_pct",
     "mcap", "max_mcap", "quote_in_pool", "mult_from_launch", "drawdown_from_max",
     "liq_removes", "fee_claims",
 ]
