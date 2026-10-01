@@ -357,3 +357,26 @@ def test_liquidity_features():
     assert f["liq_added"] == pytest.approx(5.0)
     assert f["liq_drop_pct"] == pytest.approx(12.5)
     assert f["liq_mcap_ratio"] == pytest.approx(5.0 / f["mcap"])
+
+
+def test_several_strategies_buy_each_token_once():
+    a = Strategy.from_dict({"name": "early", "checkpoints": [10], "filters": {"n_buys": {"min": 2}}})
+    b = Strategy.from_dict({"name": "later", "checkpoints": [30], "filters": {}})
+    c = Strategy.from_dict({"name": "same-time", "checkpoints": [10], "filters": {}})
+    got = []
+    dec = LiveDecider([a, b, c], got.append)
+    dec.bought.add("OLD")  # bought in an earlier run (pre-loaded from buys.csv)
+    t0, p = 1_790_000_000, 3e-8
+    evs = []
+    for m, n_buys in (("M1", 3), ("M2", 1), ("OLD", 5)):
+        evs.append(create(t0, mint=m, sig=f"c{m}"))
+        evs += [trade(t0 + 2 + i, "buy", p, f"{m}T{i}", mint=m) for i in range(n_buys)]
+    for at in (11, 31):  # trades right after each decision time (no stale checks)
+        evs += [trade(t0 + at, "buy", p, f"Z{at}{m}", mint=m) for m in ("M1", "M2", "OLD")]
+    evs.sort(key=lambda e: e["timestamp"])
+    for e in evs:
+        dec.process(e)
+    dec.tick(now=t0 + 100)
+    bought = [(d["mint"], d["strategy"]) for d in got if d["enter"]]
+    assert bought == [("M1", "early"), ("M2", "same-time")]  # first strategy that fires, once each
+    assert dec.bought == {"OLD", "M1", "M2"} and dec.buys_by == {"early": 1, "same-time": 1}

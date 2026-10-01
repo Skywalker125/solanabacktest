@@ -192,6 +192,54 @@ def _start_limit(a) -> dict:
     return {"launch_mcap": {"max": round(limit, 2)}}
 
 
+def _rule_to_strategy(rule, name: str, path: str, require: dict):
+    from .strategy import Strategy, merge_filters
+    s = Strategy(name=name, checkpoints=[rule.cp])
+    if rule.kind == "model":
+        model_path = os.path.splitext(path)[0] + ".model.json"
+        rule.extra["model"].save(model_path)
+        s.model, s.min_score = model_path, rule.min_score
+    else:
+        s.filters = rule.filters()
+    s.filters = merge_filters(s.filters, require)
+    s.save(path)
+    return s
+
+
+def _save_pool(a, results, require):
+    """Save every strategy that clears the bar into a folder that `live --strategies` runs."""
+    import glob
+    import json as _json
+    from .hunt import qualifying
+    pool = qualifying(results, a.pool_min_hits, a.pool_precision, a.judge)
+    period = {"test": "the unseen later period", "train": "the learning period",
+              "both": "both periods"}[a.judge]
+    print(f"\n== strategy pool: more than {a.pool_min_hits} runners at >= {a.pool_precision:.0%} precision "
+          f"on {period} ==")
+    os.makedirs(a.pool_dir, exist_ok=True)
+    for f in glob.glob(os.path.join(a.pool_dir, "*.json")):  # replace the previous pool
+        os.remove(f)
+    if not pool:
+        print("  none qualifies. More data (more hours in data/slim), looser --require limits, a lower "
+              "--pool-precision or --pool-min-hits would change that; --judge train is optimistic.")
+        return
+    index = []
+    for i, r in enumerate(pool, 1):
+        name = f"pool{i:02d}-{r.cp}s-{r.kind}"
+        path = os.path.join(a.pool_dir, name + ".json")
+        _rule_to_strategy(r, name, path, require)
+        index.append({"rank": i, "file": os.path.basename(path), "checkpoint": r.cp, "kind": r.kind,
+                      "rule": r.text(), "train_buys": r.train_n, "train_hits": r.train_hits,
+                      "test_buys": r.test_n, "test_hits": r.test_hits,
+                      "test_precision": round(r.test_precision, 4)})
+        print(f"  {name:<22} learning {r.train_hits:>3}/{r.train_n:<4} ({r.train_precision:5.1%})  "
+              f"unseen {r.test_hits:>3}/{r.test_n:<4} ({r.test_precision:5.1%})  {r.text()}")
+    with open(os.path.join(a.pool_dir, "index.json"), "w") as fh:
+        _json.dump(index, fh, indent=2)
+    print(f"saved {len(pool)} strategies to {a.pool_dir} - run them all with:\n"
+          f"  python -m runnerbt live --strategies {a.pool_dir} --warmup data/slim")
+
+
 def cmd_hunt(a):
     from .dataset import load_records, time_split
     from .hunt import best_per_target, format_frontier, hunt
@@ -219,22 +267,17 @@ def cmd_hunt(a):
     results, base = hunt(train, test, cps, targets, mult=a.mult, position=a.position,
                          slippage_pct=a.slippage, beam=a.beam, depth=a.depth, min_hits=a.min_hits,
                          use_model=not a.no_model, require=require,
-                         exclude=_csv_list(a.exclude) or ())
+                         exclude=_csv_list(a.exclude) or (),
+                         keep=a.keep or (5 if a.save_all else 1))
     if not results:
         sys.exit("no rule reached the precision targets; lower --min-hits or the targets, or add data")
     print(format_frontier(results, base))
+    if a.save_all:
+        _save_pool(a, results, require)
     pick = best_per_target(results).get(a.precision)
     if pick is None:
         sys.exit(f"\nnothing reaches {a.precision:.0%} precision on the training period; try a lower --precision")
-    s = Strategy(name=a.name or f"hunt-{a.mult:g}x-p{int(a.precision * 100)}", checkpoints=[pick.cp])
-    if pick.kind == "model":
-        model_path = os.path.splitext(a.out)[0] + ".model.json"
-        pick.extra["model"].save(model_path)
-        s.model, s.min_score = model_path, pick.min_score
-    else:
-        s.filters = pick.filters()
-    s.filters = merge_filters(s.filters, require)
-    s.save(a.out)
+    _rule_to_strategy(pick, a.name or f"hunt-{a.mult:g}x-p{int(a.precision * 100)}", a.out, require)
     rec = pick.test_hits / pick.test_runners if pick.test_runners else 0.0
     print(f"\nchosen for {a.precision:.0%} precision: buy at {pick.cp}s when {pick.text()}")
     print(f"  learning period: {pick.train_n} buys, {pick.train_hits} runners ({pick.train_precision:.1%})")
@@ -287,28 +330,58 @@ def cmd_export(a):
     _write_trades(a.out, rows)
 
 
+def _strategy_files(a) -> list:
+    """--strategies files/folders (a pool folder runs in its index.json rank order), else --strategy."""
+    import glob
+    import json as _json
+    if not a.strategies:
+        return [a.strategy]
+    files = []
+    for p in a.strategies:
+        if os.path.isdir(p):
+            idx = os.path.join(p, "index.json")
+            if os.path.exists(idx):
+                with open(idx) as fh:
+                    files += [os.path.join(p, e["file"]) for e in _json.load(fh)]
+            else:
+                files += sorted(f for f in glob.glob(os.path.join(p, "*.json"))
+                                if not f.endswith(".model.json") and os.path.basename(f) != "index.json")
+        else:
+            files.append(p)
+    if not files:
+        sys.exit(f"no strategy files in {a.strategies}")
+    return files
+
+
 def cmd_live(a):
     from .live import BuyLog, LiveDecider, SolPrice, run_socket
     from .strategy import Strategy
-    s = Strategy.load(a.strategy)
     from .strategy import merge_filters
-    if a.require:
-        s.filters = merge_filters(s.filters, _requirements(a.require))
+    strategies = [Strategy.load(f) for f in _strategy_files(a)]
+    extra = _requirements(a.require) if a.require else {}
     if a.skip_protocols:
-        s.filters = merge_filters(s.filters, {"protocol": {"not_in": [x.upper() for x in _csv_list(a.skip_protocols)]}})
-    s.filters = merge_filters(s.filters, _start_limit(a))
-    skipped = set((s.filters.get("protocol") or {}).get("not_in") or [])
-    if s.model:
-        s.get_model()  # fail now, not on the first launch, if the model file is missing
+        extra = merge_filters(extra, {"protocol": {"not_in": [x.upper() for x in _csv_list(a.skip_protocols)]}})
+    extra = merge_filters(extra, _start_limit(a))
+    for s in strategies:
+        s.filters = merge_filters(s.filters, extra)
+        if s.model:
+            s.get_model()  # fail now, not on the first launch, if the model file is missing
+    # a launchpad is only left out of the stream if every strategy skips it
+    skip_sets = [set((s.filters.get("protocol") or {}).get("not_in") or []) for s in strategies]
+    skipped = set.intersection(*skip_sets) if skip_sets else set()
     log = BuyLog(a.log, SolPrice())
-    dec = LiveDecider(s, log, horizon_s=_parse_duration(a.horizon), report_rejects=a.verbose)
+    dec = LiveDecider(strategies, log, horizon_s=_parse_duration(a.horizon), report_rejects=a.verbose)
+    dec.bought |= log.bought_mints()  # never buy a token twice, also across restarts
     if a.trace_minutes > 0:
         dec.trace_dir, dec.trace_s = a.trace_dir, int(a.trace_minutes * 60)
         print(f"every bought token's raw events (launch .. +{a.trace_minutes:g} min after the buy) "
               f"go to {os.path.abspath(a.trace_dir)}{os.sep}<mint>.jsonl", file=sys.stderr)
-    print(f"strategy {s.name}: decide at {s.checkpoints}s after launch"
-          f"{f', model score >= {s.min_score:.3f}' if s.model else ''}"
-          f"{f', limits {s.filters}' if s.filters else ''}", file=sys.stderr)
+    for s in strategies:
+        print(f"strategy {s.name}: decide at {s.checkpoints}s after launch"
+              f"{f', model score >= {s.min_score:.3f}' if s.model else ''}"
+              f"{f', limits {s.filters}' if s.filters else ''}", file=sys.stderr)
+    if dec.bought:
+        print(f"{len(dec.bought):,} tokens already in {a.log} will not be bought again", file=sys.stderr)
     if a.warmup:
         print(f"warming up creator history from {a.warmup} ...", file=sys.stderr)
         n = dec.warmup(a.warmup)
@@ -458,6 +531,15 @@ def main(argv=None):
     r.add_argument("--beam", type=int, default=15)
     r.add_argument("--no-model", action="store_true", help="rules only, skip the scoring model")
     r.add_argument("--exclude", help="features rules may not use, e.g. mcap,max_mcap,launch_mcap")
+    r.add_argument("--save-all", action="store_true",
+                   help="save every strategy that clears the pool bar into --pool-dir (for live --strategies)")
+    r.add_argument("--pool-dir", default="strategies/pool")
+    r.add_argument("--pool-min-hits", type=int, default=5, help="needs MORE than this many runners")
+    r.add_argument("--pool-precision", type=float, default=0.3)
+    r.add_argument("--judge", choices=["test", "both", "train"], default="both",
+                   help="where the pool bar must hold: both periods (default), test = unseen period only")
+    r.add_argument("--keep", type=int, help="rules kept per decision time and precision level "
+                                           "(default 1, or 5 with --save-all)")
     r.add_argument("--skip-protocols", help="never buy launches from these, e.g. METEORA_DBC")
     r.add_argument("--max-start-usd", type=float,
                    help="never buy a token whose first trade (dev buy included) is above this market cap, "
@@ -487,6 +569,9 @@ def main(argv=None):
 
     r = sub.add_parser("live", help="run a strategy on the live stream and log every buy (paper, no orders)")
     r.add_argument("--strategy", default="strategies/hunt.json")
+    r.add_argument("--strategies", nargs="+", metavar="PATH",
+                   help="run several strategies at once: files and/or folders (e.g. strategies/pool); "
+                        "each token is bought at most once, by the first strategy that fires")
     r.add_argument("--log", default="data/buys.csv", help="CSV that every fired buy is appended to")
     r.add_argument("--warmup", nargs="+", help="archive folder(s) to replay first, e.g. data/slim "
                                                "(gives creator-history features the same footing as the backtest)")

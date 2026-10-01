@@ -30,9 +30,15 @@ LAUNCHPADS = ["PUMPFUN", "PUMPFUN_MAYHEM", "BONK", "STONKFUN", "METEORA_DBC"]
 
 
 class LiveDecider:
-    def __init__(self, strategy: Strategy, on_decision: Callable[[dict], None],
+    def __init__(self, strategy, on_decision: Callable[[dict], None],
                  horizon_s: int = 6 * 3600, report_rejects: bool = False, engine_cfg: Optional[EngineConfig] = None):
-        self.strategy = strategy
+        # one strategy or several: every token is checked by each strategy at its own decision
+        # time, and bought once, by the first strategy that fires (in list order)
+        self.strategies: list = list(strategy) if isinstance(strategy, (list, tuple)) else [strategy]
+        self.strategy = self.strategies[0]
+        self.last_cp = max(c for s in self.strategies for c in s.checkpoints)
+        self.bought: set = set()      # never cleared: a token is bought at most once (pre-load past buys)
+        self.buys_by: dict = {}
         self.on_decision = on_decision
         self.report_rejects = report_rejects
         self.decided: set = set()
@@ -51,7 +57,8 @@ class LiveDecider:
         self._traces: dict = {}      # mint -> block time until which events are written
         self._sig = None
         self._sig_evs: list = []     # trades of the current transaction (they precede its create)
-        cfg = engine_cfg or EngineConfig(checkpoints=tuple(strategy.checkpoints), horizon_s=horizon_s)
+        all_cps = tuple(sorted({c for st in self.strategies for c in st.checkpoints}))
+        cfg = engine_cfg or EngineConfig(checkpoints=all_cps, horizon_s=horizon_s)
         self.engine = ReplayEngine(cfg, on_snapshot=self._on_snapshot)
         self.engine.on_finish = self.decided.discard
 
@@ -104,7 +111,7 @@ class LiveDecider:
 
     def _prune_traces(self):
         clock = self.engine.clock
-        keep_s = max(self.strategy.checkpoints) + 30
+        keep_s = self.last_cp + 30
         for m in [m for m, (t0, _) in self._early.items() if clock - t0 > keep_s]:
             del self._early[m]
         for m in [m for m, until in self._traces.items() if clock > until]:
@@ -112,6 +119,8 @@ class LiveDecider:
 
     def status(self) -> str:
         tr = f", tracing {len(self._traces)}" if self._traces else ""
+        if len(self.strategies) > 1 and self.buys_by:
+            tr += " (" + ", ".join(f"{k} {v}" for k, v in sorted(self.buys_by.items(), key=lambda kv: -kv[1])) + ")"
         return (f"buys {self.buys}{tr}, tracking {len(self.engine.tokens):,} launches, stream lag {self.lag():.1f}s, "
                 f"skipped {self.skipped_old:,} launched before start / {self.skipped_late} late")
 
@@ -156,7 +165,7 @@ class LiveDecider:
             self._prune_traces()
 
     def _on_snapshot(self, st: TokenState, cp: int, feat: dict):
-        if self.silent or st.mint in self.decided or cp not in self.strategy.checkpoints:
+        if self.silent or st.mint in self.decided or st.mint in self.bought:
             return
         if self.live_start is None or st.created_ts < self.live_start:
             # launched during warm-up or before we connected: we missed its start, so its
@@ -169,23 +178,37 @@ class LiveDecider:
             self.skipped_late += 1
             self.decided.add(st.mint)
             return
-        d = self.strategy.decide(feat)
-        last_cp = cp == self.strategy.checkpoints[-1]
-        if d["enter"] or last_cp:
+        fired, first_reject = None, None
+        for strat in self.strategies:
+            if cp not in strat.checkpoints:
+                continue
+            d = strat.decide(feat)
+            if d["enter"]:
+                fired = (strat, d)
+                break
+            if first_reject is None:
+                first_reject = (strat, d)
+        if cp >= self.last_cp or fired:
             self.decided.add(st.mint)
-        if d["enter"]:
+        if fired:
+            strat, d = fired
+            self.bought.add(st.mint)
             self.buys += 1
+            self.buys_by[strat.name] = self.buys_by.get(strat.name, 0) + 1
             self._start_trace(st.mint)
-        if d["enter"] or self.report_rejects:
-            self.on_decision({
-                "mint": st.mint, "symbol": st.symbol, "name": st.name, "protocol": st.protocol,
-                "checkpoint": cp, "price": st.last_price, "mcap_quote": st.last_mcap,
-                "quote_mint": st.quote_mint, "decided_at": time.time(), "created_ts": st.created_ts,
-                "raw": {"create": st.create_ev, "last_trade": st.last_trade_ev},
-                "enter": d["enter"],
-                "reason": d["reason"], "score": d["score"], "features": feat,
-                "strategy": self.strategy.name, "exit_plan": self.strategy.exit,
-            })
+        elif self.report_rejects and first_reject:
+            strat, d = first_reject
+        else:
+            return
+        self.on_decision({
+            "mint": st.mint, "symbol": st.symbol, "name": st.name, "protocol": st.protocol,
+            "checkpoint": cp, "price": st.last_price, "mcap_quote": st.last_mcap,
+            "quote_mint": st.quote_mint, "decided_at": time.time(), "created_ts": st.created_ts,
+            "raw": {"create": st.create_ev, "last_trade": st.last_trade_ev},
+            "enter": d["enter"],
+            "reason": d["reason"], "score": d["score"], "features": feat,
+            "strategy": strat.name, "exit_plan": strat.exit,
+        })
 
 
 def run_socket(decider: LiveDecider, protocols=None, actions=None, url: str = STREAM_URL, debug: bool = False):
@@ -266,6 +289,15 @@ class BuyLog:
             with open(path, "w", newline="", encoding="utf-8") as fh:
                 import csv
                 csv.writer(fh).writerow(self.FIELDS)
+
+    def bought_mints(self) -> set:
+        """Mints already in the buy log (also from earlier runs)."""
+        import csv
+        try:
+            with open(self.path, newline="", encoding="utf-8") as fh:
+                return {row["mint"] for row in csv.DictReader(fh) if row.get("mint")}
+        except (OSError, KeyError):
+            return set()
 
     def __call__(self, d: dict):
         import csv

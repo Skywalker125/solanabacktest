@@ -34,7 +34,7 @@ def wilson_lower(hits: int, n: int, z: float = 1.64) -> float:
 
 
 def rows_for(records, cp: int, mult: float = RUNNER_MULT, position: float = 0.5, slippage_pct: float = 1.0,
-             require: Optional[dict] = None, exclude=()):
+             require: Optional[dict] = None, exclude=(), keep: int = 1):
     """(feature dicts, hit flags, max multiples) for launches tradable at checkpoint cp.
 
     `require` holds hard limits (strategy filter format): launches failing them are never
@@ -160,12 +160,26 @@ def _apply(np, conds, cols, n):
     return m
 
 
-def beam_search(np, cands, y, targets, beam: int = 12, depth: int = 4, min_hits: int = 8):
-    """Best rule per precision target: most hits with Wilson LB(precision) >= target."""
+def beam_search(np, cands, y, targets, beam: int = 12, depth: int = 4, min_hits: int = 8, keep: int = 1):
+    """Rules per precision target: the `keep` with most hits whose Wilson LB(precision) >= target."""
     n = len(y)
-    best = {t: None for t in targets}
+    found = {t: [] for t in targets}
     frontier = [((), np.ones(n, dtype=bool))]
     seen = set()
+
+    def trim(lst):
+        lst.sort(key=lambda r: (-r[1], r[2]))
+        out, masks = [], set()
+        for r in lst:  # different rules selecting exactly the same launches are one rule
+            sig = (r[1], r[2])
+            if sig in masks:
+                continue
+            masks.add(sig)
+            out.append(r)
+            if len(out) >= keep:
+                break
+        return out
+
     for _ in range(depth):
         scored = []
         for rule, mask in frontier:
@@ -184,9 +198,10 @@ def beam_search(np, cands, y, targets, beam: int = 12, depth: int = 4, min_hits:
                 cnt = int(m.sum())
                 lb = wilson_lower(hits, cnt)
                 for t in targets:
-                    if lb >= t and (best[t] is None or hits > best[t][1] or
-                                    (hits == best[t][1] and cnt < best[t][2])):
-                        best[t] = (rule + (ci,), hits, cnt)
+                    if lb >= t:
+                        found[t].append((rule + (ci,), hits, cnt))
+                        if len(found[t]) > 50 * keep:
+                            found[t] = trim(found[t])
                 scored.append((hits, cnt, rule + (ci,), m))
         if not scored:
             break
@@ -199,13 +214,13 @@ def beam_search(np, cands, y, targets, beam: int = 12, depth: int = 4, min_hits:
             for s in top:
                 nxt[frozenset(s[2])] = (s[2], s[3])
         frontier = list(nxt.values())
-    return best
+    return {t: trim(v) for t, v in found.items()}
 
 
 def hunt(train_records, test_records, checkpoints, targets=(0.1, 0.2, 0.3, 0.4, 0.5),
          mult: float = RUNNER_MULT, position: float = 0.5, slippage_pct: float = 1.0,
          beam: int = 12, depth: int = 4, min_hits: int = 8, use_model: bool = True, log=print,
-         require: Optional[dict] = None, exclude=()):
+         require: Optional[dict] = None, exclude=(), keep: int = 1):
     import numpy as np
 
     results: list[Rule] = []
@@ -225,18 +240,16 @@ def hunt(train_records, test_records, checkpoints, targets=(0.1, 0.2, 0.3, 0.4, 
         log(f"  {cp:>4}s: {len(y):,} train launches, {int(y.sum())} runners ({y.mean():.2%}); "
             f"test {len(yt):,} / {int(yt.sum())}")
         cands = _candidates(np, f_tr, cols, set(exclude))
-        best = beam_search(np, cands, y, targets, beam=beam, depth=depth, min_hits=min_hits)
-        for t, b in best.items():
-            if not b:
-                continue
-            idx, hits, cnt = b
-            conds = [cands[i][0] for i in idx]
-            r = Rule(cp, conds, cnt, hits, target=t, train_runners=int(y.sum()))
-            if cols_te is not None:
-                m = _apply(np, conds, cols_te, len(yt))
-                r.test_n, r.test_hits = int(m.sum()), int((m & yt).sum())
-            r.test_runners = int(yt.sum())
-            results.append(r)
+        best = beam_search(np, cands, y, targets, beam=beam, depth=depth, min_hits=min_hits, keep=keep)
+        for t, rules in best.items():
+            for idx, hits, cnt in rules:
+                conds = [cands[i][0] for i in idx]
+                r = Rule(cp, conds, cnt, hits, target=t, train_runners=int(y.sum()))
+                if cols_te is not None:
+                    m = _apply(np, conds, cols_te, len(yt))
+                    r.test_n, r.test_hits = int(m.sum()), int((m & yt).sum())
+                r.test_runners = int(yt.sum())
+                results.append(r)
         if use_model:
             results += _model_rules(np, f_tr, y_tr, f_te, y_te, cp, targets, min_hits)
     return results, base
@@ -301,3 +314,21 @@ def format_frontier(results: list, base: dict) -> str:
             lines.append(f"  {r.cp:>4}s {r.kind:<6}{r.train_n:>11}{r.train_hits:>6}{r.train_precision:>7.1%}   "
                          f"{r.test_n:>10}{r.test_hits:>6}{r.test_precision:>7.1%}{rec:>8.1%}   {r.text()}")
     return "\n".join(lines)
+
+
+def qualifying(results: list, min_hits: int, min_precision: float, judge: str = "both") -> list:
+    """Strategies that clear the bar. judge: 'test' (the unseen later period - honest),
+    'both' (each period on its own), 'train' (learning period only - optimistic)."""
+    out, seen = [], set()
+    for r in results:
+        key = (r.cp, r.kind, r.text())
+        if key in seen:
+            continue
+        seen.add(key)
+        ok_test = r.test_hits > min_hits and r.test_precision >= min_precision
+        ok_train = r.train_hits > min_hits and r.train_precision >= min_precision
+        if (judge == "test" and ok_test) or (judge == "train" and ok_train) or \
+                (judge == "both" and ok_test and ok_train):
+            out.append(r)
+    out.sort(key=lambda r: (-r.test_hits, -r.test_precision))
+    return out
