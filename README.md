@@ -51,7 +51,8 @@ python -m runnerbt hunt data/dataset.jsonl.gz --precision 0.3 --require anti-bun
 python -m runnerbt bundles data/dataset.jsonl.gz --checkpoint 10
 #    per launchpad (5x rate, share failing the limits, liquidity backing):
 python -m runnerbt protocols data/dataset.jsonl.gz --checkpoint 30
-#    drop a launchpad everywhere with --skip-protocols METEORA_DBC (hunt and live)
+#    drop a launchpad everywhere with --skip-protocols METEORA_DBC (hunt and live),
+#    or keep only some: --only-protocols PUMPFUN,STONKFUN (hunt, live, bundles)
 #    never buy tokens that start high: --max-start-usd 10000 (first trade, dev buy included),
 #    never buy below a market cap at the buy: --min-mcap-usd 5000
 #    (both converted to SOL at the current price, or --sol-usd 200)

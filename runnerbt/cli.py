@@ -176,6 +176,18 @@ def _requirements(items) -> dict:
     return out
 
 
+def _protocol_limits(a) -> dict:
+    """--only-protocols / --skip-protocols -> a protocol filter."""
+    out: dict = {}
+    only = _csv_list(getattr(a, "only_protocols", None))
+    skip = _csv_list(getattr(a, "skip_protocols", None))
+    if only:
+        out["in"] = [x.upper() for x in only]
+    if skip:
+        out["not_in"] = [x.upper() for x in skip]
+    return {"protocol": out} if out else {}
+
+
 def _usd_limits(a) -> dict:
     """Dollar limits -> SOL limits (market caps are recorded in SOL):
     --max-start-usd: first-trade market cap (dev buy included) at most this
@@ -263,8 +275,7 @@ def cmd_hunt(a):
     targets = sorted({float(x) for x in a.targets.split(",")} | {a.precision})
     require = _requirements(a.require)
     from .strategy import merge_filters as _mf
-    if a.skip_protocols:
-        require = _mf(require, {"protocol": {"not_in": [x.upper() for x in _csv_list(a.skip_protocols)]}})
+    require = _mf(require, _protocol_limits(a))
     require = _mf(require, _usd_limits(a))
     if require:
         sample = next((r["snapshots"] for r in recs if r.get("snapshots")), {})
@@ -373,16 +384,16 @@ def cmd_live(a):
     from .strategy import merge_filters
     strategies = [Strategy.load(f) for f in _strategy_files(a)]
     extra = _requirements(a.require) if a.require else {}
-    if a.skip_protocols:
-        extra = merge_filters(extra, {"protocol": {"not_in": [x.upper() for x in _csv_list(a.skip_protocols)]}})
+    extra = merge_filters(extra, _protocol_limits(a))
     extra = merge_filters(extra, _usd_limits(a))
     for s in strategies:
         s.filters = merge_filters(s.filters, extra)
         if s.model:
             s.get_model()  # fail now, not on the first launch, if the model file is missing
-    # a launchpad is only left out of the stream if every strategy skips it
-    skip_sets = [set((s.filters.get("protocol") or {}).get("not_in") or []) for s in strategies]
-    skipped = set.intersection(*skip_sets) if skip_sets else set()
+    # stream only launchpads at least one strategy may buy from
+    def allowed(s, p):
+        rule = s.filters.get("protocol") or {}
+        return (not rule.get("in") or p in rule["in"]) and p not in (rule.get("not_in") or [])
     log = BuyLog(a.log, SolPrice())
     dec = LiveDecider(strategies, log, horizon_s=_parse_duration(a.horizon), report_rejects=a.verbose)
     dec.bought |= log.bought_mints()  # never buy a token twice, also across restarts
@@ -407,8 +418,10 @@ def cmd_live(a):
     #              which otherwise stall every thread (incl. the socket reader) for long stretches
     from .live import LAUNCHPADS
     protocols = None if (a.protocols or "").lower() == "all" else (_csv_list(a.protocols) or LAUNCHPADS)
-    if protocols:  # no need to stream launchpads the strategy never buys
-        protocols = [p for p in protocols if p not in skipped]
+    if protocols:  # no need to stream launchpads no strategy buys from
+        protocols = [p for p in protocols if any(allowed(s, p) for s in strategies)]
+        if not protocols:
+            sys.exit("the strategies' protocol limits exclude every launchpad")
     print(f"subscribing to {', '.join(protocols) if protocols else 'all protocols'}", file=sys.stderr)
     run_socket(dec, protocols, ["buy", "sell", "create", "createPool", "migrate",
                                              "curveComplete", "remove", "claimCreatorFees"], a.url,
@@ -429,10 +442,16 @@ def cmd_inspect(a):
     print(dump(evs) if evs else "no matching events")
 
 
+def _records_for(a):
+    from .dataset import load_records
+    recs = load_records(a.dataset)
+    only = [x.upper() for x in _csv_list(getattr(a, "only_protocols", None)) or []]
+    return [r for r in recs if r.get("protocol") in only] if only else recs
+
+
 def cmd_bundles(a):
     from .bundles import bundle_report
-    from .dataset import load_records
-    print(bundle_report(load_records(a.dataset), _parse_duration(a.checkpoint)))
+    print(bundle_report(_records_for(a), _parse_duration(a.checkpoint)))
 
 
 def cmd_protocols(a):
@@ -566,6 +585,7 @@ def main(argv=None):
                         "test = unseen period only")
     r.add_argument("--keep", type=int, help="rules kept per decision time and precision level "
                                            "(default 1, or 5 with --save-all)")
+    r.add_argument("--only-protocols", help="only buy launches from these, e.g. PUMPFUN,STONKFUN")
     r.add_argument("--skip-protocols", help="never buy launches from these, e.g. METEORA_DBC")
     r.add_argument("--max-start-usd", type=float,
                    help="never buy a token whose first trade (dev buy included) is above this market cap, "
@@ -604,6 +624,7 @@ def main(argv=None):
     r.add_argument("--warmup", nargs="+", help="archive folder(s) to replay first, e.g. data/slim "
                                                "(gives creator-history features the same footing as the backtest)")
     r.add_argument("--horizon", default="6h", help="how long to follow tokens; match `build --horizon`")
+    r.add_argument("--only-protocols", help="only buy launches from these, e.g. PUMPFUN,STONKFUN")
     r.add_argument("--skip-protocols", help="never buy launches from these, e.g. METEORA_DBC")
     r.add_argument("--max-start-usd", type=float,
                    help="never buy a token whose first trade (dev buy included) is above this market cap, "
@@ -636,6 +657,7 @@ def main(argv=None):
     r = sub.add_parser("bundles", help="how bundling relates to 5x runners in your data (to set limits)")
     r.add_argument("dataset")
     r.add_argument("--checkpoint", default="10")
+    r.add_argument("--only-protocols", help="e.g. PUMPFUN,STONKFUN")
     r.set_defaults(fn=cmd_bundles)
 
     r = sub.add_parser("protocols", help="per launchpad: 5x rate, bundle-limit failures, liquidity")
