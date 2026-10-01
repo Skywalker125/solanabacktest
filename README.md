@@ -23,15 +23,18 @@ pip install -r requirements.txt     # core is stdlib-only; socketio for live/rec
 ## Workflow
 
 ```bash
-# 1a. historical data: download the hourly archive for a UTC range (resumable, skips files you have)
-python -m runnerbt fetch --url-template "<archive url with {date} and {HH}>" --from 2026-09-01 --to 2026-10-01 --out data/raw
-#     placeholders: {date}=2026-09-30 {yyyy} {mm} {dd} {HH}=07 {hour}=7 {unix} {unix_ms} {iso}
-#     or set RUNNERBT_ARCHIVE_URL once; add --header "x-api-key: ..." if the archive needs a key
-# 1b. and/or record the live stream yourself (hourly files under data/raw/YYYY-MM-DD/HH.jsonl.gz)
+# 1a. historical data: Shrine's free hourly archive (https://replay.shrine.trade/pump/YYYY/MM/DD/HH.jsonl.zst)
+python -m runnerbt fetch --from 2026-09-20 --to 2026-09-27 --slim     # a week -> data/slim
+python -m runnerbt fetch --last 48 --slim                              # newest 48 hours in the archive
+python -m runnerbt fetch --all                                         # everything, raw -> data/raw
+#     --slim keeps launches + their lifecycle + trades on tokens launched in the last --keep-hours (24)
+#     and drops unused fields; raw hours are a few hundred MB each and are deleted after slimming.
+#     Re-running resumes: finished hours are skipped, half-downloaded files continue.
+# 1b. and/or record the live stream yourself (same format)
 python -m runnerbt record --out data/raw          # --debug prints the raw Socket.IO traffic
 
 # 2. replay into a dataset: features at 10s/30s/1m/2m/5m after launch, then follow each token for 6h
-python -m runnerbt build data/raw --out data/dataset.jsonl.gz --checkpoints 10,30,60,120,300 --horizon 6h
+python -m runnerbt build data/slim --out data/dataset.jsonl.gz --checkpoints 10,30,60,120,300 --horizon 6h
 
 # 3. base rates: how many launches go 5x+ from each entry time, per protocol
 python -m runnerbt stats data/dataset.jsonl.gz

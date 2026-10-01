@@ -29,20 +29,19 @@ def cmd_record(a):
 
 
 def cmd_fetch(a):
-    from datetime import datetime, timedelta, timezone
-    from .fetch import fetch_range, parse_when
-    template = a.url_template or os.environ.get("RUNNERBT_ARCHIVE_URL")
-    if not template:
-        sys.exit("no archive URL: pass --url-template (or set RUNNERBT_ARCHIVE_URL), e.g.\n"
-                 "  --url-template \"https://<archive-host>/{date}/{HH}.jsonl.gz\"\n"
-                 "copy the real pattern from the provider's 'Historical replay' docs")
-    start = parse_when(a.start)
-    end = parse_when(a.end) if a.end else start + timedelta(hours=_parse_duration(a.span) / 3600)
-    end = min(end, datetime.now(timezone.utc))
-    headers = dict(h.split(":", 1) for h in a.header or [])
-    headers = {k.strip(): v.strip() for k, v in headers.items()}
-    c = fetch_range(template, start, end, a.out, headers, workers=a.workers)
-    if c["error"]:
+    from datetime import timedelta
+    from .fetch import DEFAULT_TEMPLATE, fetch, parse_when
+    start = parse_when(a.start) if a.start else None
+    end = parse_when(a.end) if a.end else (start + timedelta(seconds=_parse_duration(a.span))
+                                            if start and a.span else None)
+    if not (start or a.last or a.all):
+        sys.exit("say which hours: --from 2026-09-20 [--to 2026-09-27 | --span 24h], --last 24, or --all")
+    headers = {k.strip(): v.strip() for k, v in (h.split(":", 1) for h in a.header or [])}
+    out = a.out or ("data/slim" if a.slim else "data/raw")
+    c = fetch(out, start, end, a.last, slim=a.slim, keep_hours=a.keep_hours,
+              protocols=set(_csv_list(a.protocols)) if a.protocols else None, keep_raw=a.keep_raw,
+              workers=a.workers, template=a.url_template or DEFAULT_TEMPLATE, headers=headers)
+    if c.get("error"):
         sys.exit(1)
 
 
@@ -234,15 +233,22 @@ def main(argv=None):
     r.add_argument("--debug", action="store_true", help="print raw Socket.IO traffic")
     r.set_defaults(fn=cmd_record)
 
-    r = sub.add_parser("fetch", help="download the hourly historical archive for a time range")
-    r.add_argument("--url-template", help="archive URL with {date} {HH} {yyyy} {mm} {dd} {hour} {unix} "
-                                         "placeholders (or env RUNNERBT_ARCHIVE_URL)")
-    r.add_argument("--from", dest="start", required=True, help="UTC start, e.g. 2026-09-01 or 2026-09-01T06")
-    r.add_argument("--to", dest="end", help="UTC end (exclusive); default --from + --span")
-    r.add_argument("--span", default="24h")
-    r.add_argument("--out", default="data/raw")
-    r.add_argument("--header", action="append", help="extra HTTP header, e.g. 'x-api-key: sk_...'")
-    r.add_argument("--workers", type=int, default=4)
+    r = sub.add_parser("fetch", help="download the Shrine hourly historical replay archive")
+    r.add_argument("--from", dest="start", help="UTC start hour, e.g. 2026-09-20 or 2026-09-20T06")
+    r.add_argument("--to", dest="end", help="UTC end (exclusive)")
+    r.add_argument("--span", help="length instead of --to, e.g. 24h or 7d")
+    r.add_argument("--last", type=int, help="only the newest N hours in the archive")
+    r.add_argument("--all", action="store_true", help="every hour the archive holds")
+    r.add_argument("--slim", action="store_true",
+                   help="keep only launches + their trades (much smaller)")
+    r.add_argument("--keep-hours", type=float, default=24,
+                   help="slim: keep trades of tokens up to this long after launch (>= build --horizon)")
+    r.add_argument("--protocols", help="slim: only launches from these protocols, e.g. PUMPFUN,BONK")
+    r.add_argument("--keep-raw", action="store_true", help="slim: also keep the raw .zst files")
+    r.add_argument("--out", help="default data/raw, or data/slim with --slim")
+    r.add_argument("--workers", type=int, default=3, help="parallel downloads")
+    r.add_argument("--url-template", help="override the archive URL ({yyyy} {mm} {dd} {HH} {date} {unix})")
+    r.add_argument("--header", action="append", help="extra HTTP header")
     r.set_defaults(fn=cmd_fetch)
 
     r = sub.add_parser("synth", help="generate a synthetic event file for dry runs")

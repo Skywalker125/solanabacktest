@@ -1,4 +1,4 @@
-"""Reading and writing event files (JSONL, JSONL.gz, JSON arrays)."""
+"""Reading and writing event files (JSONL, JSONL.gz, JSONL.zst, JSON arrays)."""
 
 from __future__ import annotations
 
@@ -8,10 +8,33 @@ import json
 import os
 from typing import Iterable, Iterator
 
-EVENT_SUFFIXES = (".jsonl", ".jsonl.gz", ".ndjson", ".ndjson.gz", ".json", ".json.gz")
+try:  # 3-5x faster parsing on multi-GB archive hours
+    from orjson import loads
+except ImportError:  # pragma: no cover
+    loads = json.loads
+
+EVENT_SUFFIXES = (".jsonl", ".jsonl.gz", ".jsonl.zst", ".ndjson", ".ndjson.gz", ".json", ".json.gz")
+
+
+def open_zstd_text(fileobj):
+    """Streaming text reader over a zstd-compressed binary file object."""
+    try:
+        import zstandard
+    except ImportError:
+        try:
+            from compression import zstd  # Python 3.14+
+            return io.TextIOWrapper(zstd.ZstdFile(fileobj), encoding="utf-8")
+        except ImportError:
+            raise SystemExit("reading .zst archives needs: pip install zstandard") from None
+    reader = zstandard.ZstdDecompressor().stream_reader(fileobj, read_size=1 << 20, closefd=True)
+    return io.TextIOWrapper(reader, encoding="utf-8")
 
 
 def _open_text(path: str, mode: str = "rt"):
+    if path.endswith(".zst"):
+        if "r" not in mode:
+            raise ValueError("writing .zst is not supported; use .jsonl.gz")
+        return open_zstd_text(open(path, "rb"))
     if path.endswith(".gz"):
         return gzip.open(path, mode, encoding="utf-8")
     return open(path, mode, encoding="utf-8")
@@ -26,9 +49,10 @@ def list_event_files(paths: Iterable[str]) -> list[str]:
     out: list[str] = []
     for p in paths:
         if os.path.isdir(p):
-            for root, _dirs, files in os.walk(p):
+            for root, dirs, files in os.walk(p):
+                dirs[:] = [d for d in dirs if not d.startswith("_")]  # _raw/, scratch
                 for f in files:
-                    if f.endswith(EVENT_SUFFIXES):
+                    if f.endswith(EVENT_SUFFIXES) and not f.startswith("_"):
                         out.append(os.path.join(root, f))
         elif os.path.exists(p):
             out.append(p)
@@ -55,11 +79,11 @@ def iter_file(path: str) -> Iterator[dict]:
         buf.write(fh.readline())
         line = buf.getvalue().strip()
         if line:
-            yield json.loads(line)
+            yield loads(line)
         for line in fh:
             line = line.strip()
             if line:
-                yield json.loads(line)
+                yield loads(line)
 
 
 def iter_events(paths: Iterable[str]) -> Iterator[dict]:

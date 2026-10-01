@@ -1,3 +1,5 @@
+zstandard>=0.22                 # read the .jsonl.zst historical archive
 python-socketio[client]>=5.10   # record / live
 numpy>=1.24                     # train (scoring model)
 pytest>=7                       # tests
+orjson>=3.9 ; platform_python_implementation == "CPython"   # optional: faster parsing of big archive hours

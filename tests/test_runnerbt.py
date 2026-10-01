@@ -147,17 +147,12 @@ def test_stream_unpack_handles_batches():
     assert unpack(None) == []
 
 
-def test_fetch_template_and_sniff():
-    import gzip
-    import json
-    from runnerbt.fetch import hours_between, parse_when, render, sniff_ext
-    t = parse_when("2026-09-30T07")
-    assert render("https://x/{date}/{HH}.jsonl.gz?h={hour}&u={unix}", t) == \
-        f"https://x/2026-09-30/07.jsonl.gz?h=7&u={int(t.timestamp())}"
+def test_fetch_hours_and_urls():
+    from runnerbt.fetch import DEFAULT_TEMPLATE, hour_key, hours_between, parse_when, render
+    t = parse_when("2026-09-14T12")
+    assert render(DEFAULT_TEMPLATE, t) == "https://replay.shrine.trade/pump/2026/09/14/12.jsonl.zst"
+    assert parse_when("2026/09/14/12") == t and hour_key(t) == "2026/09/14/12"
     assert len(list(hours_between(parse_when("2026-09-30"), parse_when("2026-10-01")))) == 24
-    line = json.dumps({"action": "buy", "signature": "s"}).encode()
-    assert sniff_ext(gzip.compress(line + b"\n" + line)) == ".jsonl.gz"
-    assert sniff_ext(b"[" + line + b"]") == ".json"
 
 
 def test_millisecond_timestamps_are_normalised():
@@ -166,3 +161,30 @@ def test_millisecond_timestamps_are_normalised():
         e["timestamp"] *= 1000
     (r,) = run(evs, checkpoints=(10,), horizon_s=1000)
     assert r["created_ts"] == 1_790_000_000 and r["snapshots"]["10"]["n_buys"] == 1
+
+
+def test_slim_keeps_everything_the_backtest_needs():
+    from runnerbt.fetch import Slimmer
+    events = generate(n_tokens=120, hours=4, seed=21)
+    noise = [{"signature": f"n{i}", "block": 1, "timestamp": e["timestamp"], "action": "buy",
+              "protocol": "PUMPSWAP", "mint": "OLDMINT", "pool": "OLDPOOL", "price": 1.0}
+             for i, e in enumerate(events[::3])]
+    full = sorted(events + noise, key=lambda e: e["timestamp"])
+    sl = Slimmer(keep_hours=24)
+    slim = [k for e in full for k in sl.feed(e)]
+    assert not any(e.get("mint") == "OLDMINT" for e in slim)
+    a = {r["mint"]: r for r in run(full, checkpoints=(30, 60), horizon_s=3600)}
+    b = {r["mint"]: r for r in run(slim, checkpoints=(30, 60), horizon_s=3600)}
+    assert a.keys() == b.keys()
+    for m in a:
+        assert a[m]["snapshots"] == b[m]["snapshots"] and a[m]["path"] == b[m]["path"]
+
+
+def test_zst_files_are_readable(tmp_path):
+    zstandard = pytest.importorskip("zstandard")
+    from runnerbt.io import iter_events
+    d = tmp_path / "2026" / "09" / "14"
+    d.mkdir(parents=True)
+    (d / "12.jsonl.zst").write_bytes(zstandard.ZstdCompressor().compress(b'{"action":"buy","signature":"a"}\n'))
+    (tmp_path / "_slim_state.json").write_text("{}")
+    assert [e["signature"] for e in iter_events([str(tmp_path)])] == ["a"]

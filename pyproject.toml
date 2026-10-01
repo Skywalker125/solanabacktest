@@ -3,7 +3,7 @@ name = "runnerbt"
 version = "0.1.0"
 description = "Backtest and live entry decisions for 5x+ runners on Solana launchpads"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["zstandard>=0.22"]
 
 [project.optional-dependencies]
 live = ["python-socketio[client]>=5.10"]
