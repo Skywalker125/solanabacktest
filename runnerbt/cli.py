@@ -290,7 +290,14 @@ def cmd_live(a):
         n = dec.warmup(a.warmup)
         print(f"  replayed {n:,} events", file=sys.stderr)
     print(f"buys are appended to {os.path.abspath(a.log)}  (Ctrl+C to stop)", file=sys.stderr)
-    run_socket(dec, _csv_list(a.protocols), ["buy", "sell", "create", "createPool", "migrate",
+    import gc
+    gc.collect()
+    gc.freeze()  # warm-up objects never change again: keep them out of garbage-collection passes,
+    #              which otherwise stall every thread (incl. the socket reader) for long stretches
+    from .live import LAUNCHPADS
+    protocols = None if (a.protocols or "").lower() == "all" else (_csv_list(a.protocols) or LAUNCHPADS)
+    print(f"subscribing to {', '.join(protocols) if protocols else 'all protocols'}", file=sys.stderr)
+    run_socket(dec, protocols, ["buy", "sell", "create", "createPool", "migrate",
                                              "curveComplete", "remove", "claimCreatorFees"], a.url,
                debug=a.debug)
     print(f"{dec.buys} buys this session", file=sys.stderr)
@@ -451,7 +458,8 @@ def main(argv=None):
     r.add_argument("--trace-minutes", type=float, default=30, help="keep tracing this long after a buy (0 = off)")
     r.add_argument("--require", nargs="+", metavar="RULE",
                    help="extra hard limits on top of the strategy, e.g. anti-bundle or launch_block_pct<=10")
-    r.add_argument("--protocols", help="default: all launchpads")
+    r.add_argument("--protocols", help="default: the launchpads (decisions happen on their curves); "
+                                        "'all' also streams AMM trading of older tokens")
     r.add_argument("--url", default="https://sol.shrine.trade")
     r.add_argument("--debug", action="store_true")
     r.add_argument("-v", "--verbose", action="store_true", help="also print rejected launches")

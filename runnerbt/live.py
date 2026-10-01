@@ -24,6 +24,11 @@ from .strategy import Strategy
 from .stream import STREAM_URL
 
 
+# Where launches happen and trade until migration. Live decisions are made seconds after launch,
+# so the AMM firehose (PumpSwap/Raydium/Orca/Meteora trading of older tokens) is not needed.
+LAUNCHPADS = ["PUMPFUN", "PUMPFUN_MAYHEM", "BONK", "STONKFUN", "METEORA_DBC"]
+
+
 class LiveDecider:
     def __init__(self, strategy: Strategy, on_decision: Callable[[dict], None],
                  horizon_s: int = 6 * 3600, report_rejects: bool = False, engine_cfg: Optional[EngineConfig] = None):

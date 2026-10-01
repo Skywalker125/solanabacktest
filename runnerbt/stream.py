@@ -41,6 +41,31 @@ def unpack(data) -> list:
     return []
 
 
+def _dispatch_messages_inline(sio) -> bool:
+    """Handle each Engine.IO message in the socket's reader thread instead of a new thread.
+
+    python-socketio starts one thread per incoming message. At firehose rates (one message per
+    event) that thread churn is slower than the stream - especially on Windows - so the reader
+    falls behind, the server's ping waits behind the backlog, and after ~30s the connection is
+    dropped ('transport error'). Our handler only queues the event, so running it inline is
+    cheap, and it also keeps events in order."""
+    try:
+        from engineio import packet as eio_packet
+        eio = sio.eio
+        original = eio._receive_packet
+
+        def receive(pkt):
+            if pkt.packet_type == eio_packet.MESSAGE:
+                eio._trigger_event("message", pkt.data, run_async=False)
+            else:
+                original(pkt)
+
+        eio._receive_packet = receive
+        return True
+    except Exception:  # library internals changed: fall back to its default behaviour
+        return False
+
+
 class StreamStats:
     def __init__(self):
         self.messages = 0
@@ -50,6 +75,7 @@ class StreamStats:
         self.connected_at: Optional[float] = None
         self.last_message_at: Optional[float] = None
         self.reconnects = 0
+        self.peak_backlog = 0
 
 
 def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, url: str = STREAM_URL,
@@ -89,7 +115,12 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
     # reconnection is handled below: the server allows one stream socket per IP and refuses a
     # new subscription while it still holds the old (dead) one, so a blind auto-reconnect can
     # end up "connected" but receiving nothing
+    if not debug:  # "packet queue is empty, aborting" etc. on every disconnect: noise
+        import logging
+        for name in ("engineio.client", "socketio.client", "websocket"):
+            logging.getLogger(name).setLevel(logging.CRITICAL)
     sio = socketio.Client(reconnection=False, logger=debug, engineio_logger=debug)
+    _dispatch_messages_inline(sio)
     need = {"reason": None, "wait": 0.0}
     refused = {"n": 0}
 
@@ -138,6 +169,9 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
         # only hand over: the socket thread must stay free to answer the server's pings, and
         # all processing happens in the main loop (one thread touches the engine)
         inbox.put(data)
+        q = inbox.qsize()
+        if q > st.peak_backlog:
+            st.peak_backlog = q
 
     @sio.on("*")
     def any_event(event, *args):
@@ -212,9 +246,10 @@ def run_stream(on_event: Callable[[dict], None], protocols=None, actions=None, u
                     extra += f", {st.reconnects} reconnects"
                 if status_extra:
                     extra += "; " + status_extra()
-                backlog = inbox.qsize()
-                if backlog > 100:
-                    extra += f", {backlog:,} messages queued (processing is falling behind)"
+                extra += f", queue peak {st.peak_backlog:,}"
+                if st.peak_backlog > 1000:
+                    extra += " (processing is falling behind)"
+                st.peak_backlog = inbox.qsize()
                 _log(f"{st.events:,} events in {st.messages:,} messages, "
                      f"{st.errors} handler errors, connected={sio.connected}{extra}")
     except KeyboardInterrupt:
