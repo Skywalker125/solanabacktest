@@ -61,7 +61,7 @@ def cmd_build(a):
         checkpoints=tuple(_parse_duration(x) for x in a.checkpoints.split(",")),
         horizon_s=_parse_duration(a.horizon),
         path_step=a.path_step,
-        include_pool_launches=not a.no_pool_launches,
+        include_pool_launches=a.pool_launches,
         sol_only=not a.all_quotes,
         protocols=set(_csv_list(a.protocols)) if a.protocols else None,
     )
@@ -446,6 +446,11 @@ def cmd_buys(a):
     print(buys_report(a.log))
 
 
+def cmd_trace(a):
+    from .inspect import trace_report
+    print(trace_report(a.file, a.limit))
+
+
 def cmd_replay(a):
     """Run the live decider over archived events (what would the app have flagged?)."""
     from .io import iter_events
@@ -503,7 +508,9 @@ def main(argv=None):
     r.add_argument("--protocols", help="only launches from these protocols")
     r.add_argument("--all-quotes", action="store_true",
                    help="also launches paired against tokens other than SOL (their amounts are not comparable)")
-    r.add_argument("--no-pool-launches", action="store_true", help="ignore createPool launches")
+    r.add_argument("--pool-launches", action="store_true",
+                   help="also treat a new AMM pool on an unseen token as a launch (mostly migrations of "
+                        "older tokens, so off by default)")
     r.add_argument("--include-incomplete", action="store_true")
     r.set_defaults(fn=cmd_build)
 
@@ -640,6 +647,11 @@ def main(argv=None):
     r = sub.add_parser("buys", help="bundle numbers of every buy the live run made")
     r.add_argument("--log", default="data/buys.csv")
     r.set_defaults(fn=cmd_buys)
+
+    r = sub.add_parser("trace", help="walk through a bought token's trace trade by trade")
+    r.add_argument("file", help="e.g. data/traces/<mint>.jsonl")
+    r.add_argument("--limit", type=int, default=80, help="trades to show")
+    r.set_defaults(fn=cmd_trace)
 
     r = sub.add_parser("replay", help="run the live decider over archived events")
     r.add_argument("input", nargs="+")

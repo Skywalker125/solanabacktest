@@ -117,3 +117,55 @@ def mcap_check(paths, max_launches: int = 5000) -> str:
     lines.append("\nMedians of the first clean trade of each SOL-quoted launch, in SOL. 'engine' should match "
                  "'from amounts' (a SOL launch starts around 25-35 SOL). Market cap = price x supply.")
     return "\n".join(lines)
+
+
+def trace_report(path: str, limit: int = 80) -> str:
+    """Replay one token's raw events and show, per trade, who traded, the amounts, the reported vs.
+    computed price and market cap, and whether the seller ever bought on the curve."""
+    from .engine import EngineConfig, ReplayEngine
+    from .io import iter_file
+    evs = list(iter_file(path))
+    if not evs:
+        return "empty trace"
+    lines = []
+    bought: dict = {}
+    t0 = None
+    rows = []
+
+    def on_trade(st, ev):
+        nonlocal t0
+        t0 = t0 if t0 is not None else st.created_ts
+        legs = ev.get("breakdown") or [{"trader": (ev.get("tradersInvolved") or [ev.get("txSigner")])[0],
+                                        "action": ev.get("action"), "tokenAmount": ev.get("tokenAmount"),
+                                        "quoteAmount": ev.get("quoteAmount")}]
+        for leg in legs:
+            tr, ta = leg.get("trader") or "?", float(leg.get("tokenAmount") or 0)
+            note = ""
+            if leg.get("action") == "buy":
+                bought[tr] = bought.get(tr, 0.0) + ta
+            else:
+                if bought.get(tr, 0.0) <= 0:
+                    note = "NEVER BOUGHT"
+                bought[tr] = bought.get(tr, 0.0) - ta
+            supply = float(st.supply or 1e9)
+            rows.append(f"{(ev.get('timestamp') or 0) - (t0 or 0):>6}s {leg.get('action', ''):<5}"
+                        f"{float(leg.get('quoteAmount') or 0):>10.3f} SOL {100 * ta / supply:>7.3f}% "
+                        f"{tr[:8]:<9}{(st.last_mcap or 0):>9.1f} {float(ev.get('marketCapQuote') or 0):>9.1f}"
+                        f"  {ev.get('protocol', '')}  {note}")
+
+    eng = ReplayEngine(EngineConfig(checkpoints=(10,), horizon_s=10 ** 7, sol_only=False,
+                                    max_launch_mcap=1e18), on_trade=on_trade)
+    for ev in evs:
+        eng.process(ev)
+    create = next((e for e in evs if e.get("action") == "create"), {})
+    lines.append(f"{create.get('symbol') or ''} {create.get('mint') or ''}  protocol {create.get('protocol')}  "
+                 f"supply {create.get('supply')}  tokensInPool {create.get('tokensInPool')}  "
+                 f"quoteInPool {create.get('quoteInPool')}  creator {str(create.get('creator'))[:8]}")
+    lines.append(f"{'t':>7} {'side':<5}{'quote':>14} {'supply%':>8} {'trader':<9}{'mcap SOL':>9} "
+                 f"{'reported':>9}")
+    lines += rows[:limit]
+    if len(rows) > limit:
+        lines.append(f"... {len(rows) - limit} more trades")
+    sold_unbought = sum(1 for r in rows if r.endswith("NEVER BOUGHT"))
+    lines.append(f"\n{len(rows)} trades; {sold_unbought} sells by wallets that never bought on the curve")
+    return "\n".join(lines)

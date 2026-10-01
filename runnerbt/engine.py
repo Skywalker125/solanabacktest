@@ -25,7 +25,9 @@ class EngineConfig:
     checkpoints: tuple = (10, 30, 60, 120, 300)  # seconds after launch
     horizon_s: int = 6 * 3600                     # how long to follow each token
     path_step: float = 0.01                       # store a path point on >=1% price move
-    include_pool_launches: bool = True            # treat createPool on an unseen mint as a launch
+    # a createPool on an unseen mint is usually a migration or new pool of an older token
+    # (mcap check: PUMPSWAP/METEORA "launches" start at 85-410 SOL), so off by default
+    include_pool_launches: bool = False
     sol_only: bool = True                         # only launches quoted in SOL (comparable units)
     protocols: Optional[set] = None               # restrict launches to these protocols
     max_launch_mcap: float = 3000.0               # first mcap above this (in quote) = mislabeled, dropped
