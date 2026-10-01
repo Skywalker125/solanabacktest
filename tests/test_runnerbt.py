@@ -134,3 +134,35 @@ def test_model_roundtrip(tmp_path):
     feat = next(r for r in recs if "30" in r["snapshots"])["snapshots"]["30"]
     assert math.isclose(m.predict_one(feat), m2.predict_one(feat))
     assert 0.0 <= m2.predict_one(feat) <= 1.0
+
+
+def test_stream_unpack_handles_batches():
+    from runnerbt.stream import unpack
+    e = {"action": "buy", "signature": "a"}
+    assert unpack(e) == [e]
+    assert unpack([e, e]) == [e, e]
+    assert unpack([[e], e]) == [e, e]
+    assert unpack({"events": [e]}) == [e]
+    assert unpack('[{"action": "buy", "signature": "a"}]') == [e]
+    assert unpack(None) == []
+
+
+def test_fetch_template_and_sniff():
+    import gzip
+    import json
+    from runnerbt.fetch import hours_between, parse_when, render, sniff_ext
+    t = parse_when("2026-09-30T07")
+    assert render("https://x/{date}/{HH}.jsonl.gz?h={hour}&u={unix}", t) == \
+        f"https://x/2026-09-30/07.jsonl.gz?h=7&u={int(t.timestamp())}"
+    assert len(list(hours_between(parse_when("2026-09-30"), parse_when("2026-10-01")))) == 24
+    line = json.dumps({"action": "buy", "signature": "s"}).encode()
+    assert sniff_ext(gzip.compress(line + b"\n" + line)) == ".jsonl.gz"
+    assert sniff_ext(b"[" + line + b"]") == ".json"
+
+
+def test_millisecond_timestamps_are_normalised():
+    evs = [create(1_790_000_000), trade(1_790_000_005, "buy", 3e-8), trade(1_790_000_050, "buy", 3e-8, "B")]
+    for e in evs:
+        e["timestamp"] *= 1000
+    (r,) = run(evs, checkpoints=(10,), horizon_s=1000)
+    assert r["created_ts"] == 1_790_000_000 and r["snapshots"]["10"]["n_buys"] == 1

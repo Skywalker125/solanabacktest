@@ -14,7 +14,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from .live import STREAM_URL
+from .stream import STREAM_URL
 
 
 class HourlyWriter:
@@ -23,9 +23,18 @@ class HourlyWriter:
         self._key = None
         self._fh = None
         self.count = 0
+        self._flushed = time.time()
+
+    def flush_if_due(self):
+        # gzip buffers a lot; flush regularly so a crash or Ctrl+C loses little
+        if self._fh and time.time() - self._flushed > 30:
+            self._fh.flush()
+            self._flushed = time.time()
 
     def write(self, ev: dict):
         ts = ev.get("timestamp") or int(time.time())
+        if ts > 1e11:  # milliseconds
+            ts //= 1000
         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
         key = (dt.strftime("%Y-%m-%d"), dt.strftime("%H"))
         if key != self._key:
@@ -45,36 +54,14 @@ class HourlyWriter:
             self._fh = None
 
 
-def record(out_dir: str, protocols=None, actions=None, url: str = STREAM_URL):
-    import socketio
+def record(out_dir: str, protocols=None, actions=None, url: str = STREAM_URL, debug: bool = False):
+    from .stream import run_stream
 
     w = HourlyWriter(out_dir)
-    sio = socketio.Client(reconnection=True)
-
-    @sio.event
-    def connect():
-        payload = {}
-        if protocols:
-            payload["protocols"] = list(protocols)
-        if actions:
-            payload["actions"] = list(actions)
-        sio.emit("subscribe_stream", payload)
-        print(f"recording {url} -> {out_dir} ({payload or 'all'})", file=sys.stderr)
-
-    @sio.on("stream")
-    def on_stream(ev):
-        w.write(ev)
-
-    sio.connect(url, transports=["websocket"])
-    last = time.time()
+    print(f"recording -> {os.path.abspath(out_dir)}", file=sys.stderr)
     try:
-        while True:
-            sio.sleep(5)
-            if time.time() - last > 60:
-                print(f"  {w.count:,} events recorded", file=sys.stderr)
-                last = time.time()
-    except KeyboardInterrupt:
-        pass
+        run_stream(w.write, protocols, actions, url, debug=debug,
+                   on_tick=w.flush_if_due, tick_s=5.0, status_every_s=30.0)
     finally:
         w.close()
-        sio.disconnect()
+        print(f"{w.count:,} events written", file=sys.stderr)

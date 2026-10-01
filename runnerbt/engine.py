@@ -305,6 +305,8 @@ class ReplayEngine:
     def process(self, ev: dict):
         self.n_events += 1
         ts = ev.get("timestamp")
+        if ts is not None and ts > 1e11:  # archive in milliseconds
+            ts = ev["timestamp"] = int(ts // 1000)
         if ts is not None and ts > self.clock:
             self.advance(ts)
         sig = ev.get("signature")

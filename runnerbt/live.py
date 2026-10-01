@@ -19,7 +19,7 @@ from typing import Callable, Optional
 from .engine import EngineConfig, ReplayEngine, TokenState
 from .strategy import Strategy
 
-STREAM_URL = "https://sol.shrine.trade"
+from .stream import STREAM_URL
 
 
 class LiveDecider:
@@ -56,38 +56,12 @@ class LiveDecider:
             })
 
 
-def run_socket(decider: LiveDecider, protocols=None, actions=None, url: str = STREAM_URL):
+def run_socket(decider: LiveDecider, protocols=None, actions=None, url: str = STREAM_URL, debug: bool = False):
     """Connect to the Advanced Data Stream and drive a LiveDecider (blocking)."""
-    import socketio  # python-socketio[client]
+    from .stream import run_stream
 
-    sio = socketio.Client(reconnection=True)
-
-    @sio.event
-    def connect():
-        payload = {}
-        if protocols:
-            payload["protocols"] = list(protocols)
-        if actions:
-            payload["actions"] = list(actions)
-        sio.emit("subscribe_stream", payload)
-        print(f"connected to {url}, subscribed {payload or 'all'}", file=sys.stderr)
-
-    @sio.on("stream")
-    def on_stream(ev):
-        decider.process(ev)
-
-    sio.connect(url, transports=["websocket"])
-    try:
-        while True:
-            sio.sleep(1)
-            decider.tick()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        try:
-            sio.emit("unsubscribe_stream")
-        finally:
-            sio.disconnect()
+    run_stream(decider.process, protocols, actions, url, on_tick=decider.tick, tick_s=1.0,
+               status_every_s=60.0, debug=debug)
 
 
 def print_decision(d: dict):

@@ -23,10 +23,12 @@ pip install -r requirements.txt     # core is stdlib-only; socketio for live/rec
 ## Workflow
 
 ```bash
-# 1. get data: record the stream yourself (hourly files under data/raw/YYYY-MM-DD/HH.jsonl.gz) ...
-python -m runnerbt record --out data/raw
-#    ... and/or download the hourly "Historical replay" archive into a folder
-#    (.jsonl, .jsonl.gz, .ndjson or .json arrays are all accepted)
+# 1a. historical data: download the hourly archive for a UTC range (resumable, skips files you have)
+python -m runnerbt fetch --url-template "<archive url with {date} and {HH}>" --from 2026-09-01 --to 2026-10-01 --out data/raw
+#     placeholders: {date}=2026-09-30 {yyyy} {mm} {dd} {HH}=07 {hour}=7 {unix} {unix_ms} {iso}
+#     or set RUNNERBT_ARCHIVE_URL once; add --header "x-api-key: ..." if the archive needs a key
+# 1b. and/or record the live stream yourself (hourly files under data/raw/YYYY-MM-DD/HH.jsonl.gz)
+python -m runnerbt record --out data/raw          # --debug prints the raw Socket.IO traffic
 
 # 2. replay into a dataset: features at 10s/30s/1m/2m/5m after launch, then follow each token for 6h
 python -m runnerbt build data/raw --out data/dataset.jsonl.gz --checkpoints 10,30,60,120,300 --horizon 6h
