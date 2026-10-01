@@ -1,0 +1,3 @@
+python-socketio[client]>=5.10   # record / live
+numpy>=1.24                     # train (scoring model)
+pytest>=7                       # tests

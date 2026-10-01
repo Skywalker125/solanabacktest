@@ -1,0 +1,25 @@
+{
+  "name": "default",
+  "checkpoints": [30, 60],
+  "filters": {
+    "has_authority": {"eq": false},
+    "risky_extension": {"eq": false},
+    "quote_is_sol": {"eq": true},
+    "dev_sold": {"eq": false},
+    "unique_buyers": {"min": 10},
+    "net_flow": {"min": 2.0},
+    "top3_share": {"max": 0.6},
+    "bundle_share": {"max": 0.3}
+  },
+  "model": null,
+  "min_score": null,
+  "exit": {
+    "take_profit": [{"mult": 5.0, "frac": 0.6}, {"mult": 10.0, "frac": 1.0}],
+    "stop_loss": 0.5,
+    "trailing": {"activate": 3.0, "drop": 0.4},
+    "max_hold_s": 21600
+  },
+  "position": 0.5,
+  "fee_pct": 1.0,
+  "slippage_pct": 1.0
+}
