@@ -159,7 +159,7 @@ def cmd_optimize(a):
 
 # Starting points; check them against your data with `python -m runnerbt bundles <dataset>`
 ANTI_BUNDLE = ["early_slots_pct<=10", "bundle_slot_pct<=10", "max_slot_buyers<=3",
-               "top10_hold_pct<=35", "dev_hold_pct<=8"]
+               "top10_hold_pct<=35", "dev_hold_pct<=8", "unbought_sell_pct<=0.5"]
 
 
 def _requirements(items) -> dict:
@@ -198,7 +198,8 @@ def cmd_hunt(a):
           f"{len(test):,} later launches to test on; checkpoints {cps}")
     results, base = hunt(train, test, cps, targets, mult=a.mult, position=a.position,
                          slippage_pct=a.slippage, beam=a.beam, depth=a.depth, min_hits=a.min_hits,
-                         use_model=not a.no_model, require=require)
+                         use_model=not a.no_model, require=require,
+                         exclude=_csv_list(a.exclude) or ())
     if not results:
         sys.exit("no rule reached the precision targets; lower --min-hits or the targets, or add data")
     print(format_frontier(results, base))
@@ -413,6 +414,7 @@ def main(argv=None):
     r.add_argument("--depth", type=int, default=4, help="max conditions per rule")
     r.add_argument("--beam", type=int, default=15)
     r.add_argument("--no-model", action="store_true", help="rules only, skip the scoring model")
+    r.add_argument("--exclude", help="features rules may not use, e.g. mcap,max_mcap,launch_mcap")
     r.add_argument("--require", nargs="+", metavar="RULE",
                    help="hard limits, e.g. launch_block_pct<=15 bundle_buyers<=3, or the preset "
                         "anti-bundle (= " + " ".join(ANTI_BUNDLE) + ")")

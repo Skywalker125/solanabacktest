@@ -71,6 +71,12 @@ class TokenState:
         self.bundle_vol = 0.0
         self.launch_block_tokens = 0.0   # tokens bought in the launch block, dev included
         self.holdings: dict[str, float] = {}   # wallet -> net tokens (buys - sells), dev included
+        self.unbought_sold = 0.0               # tokens sold by wallets never seen buying (allocations, transfers)
+        self.unbought_sellers: set = set()
+        tip = ev.get("tokensInPool")
+        sup = float(ev.get("supply") or 0)
+        # share of supply not placed in the curve at launch (pre-allocated to creator/partners)
+        self.off_curve_pct = max(0.0, 100.0 * (1 - float(tip) / sup)) if tip and sup else 0.0
         self.slots: dict[int, list] = {}       # block -> [set(buyers), tokens bought] (early blocks)
         self.dev_bought_tokens = 0.0
         self.dev_sold_tokens = 0.0
@@ -198,6 +204,10 @@ class TokenState:
                     self.sellers.add(trader)
                     if trader in self.holdings:
                         self.holdings[trader] -= ta
+                    elif not is_dev or self.dev_initial_buy_tokens == 0:
+                        # selling tokens it never bought on the curve: an allocation or a transfer
+                        self.unbought_sold += ta
+                        self.unbought_sellers.add(trader)
                 if is_dev:
                     self.dev_sold_tokens += ta
                     self.dev_sell_count += 1
@@ -295,6 +305,10 @@ class TokenState:
             "top10_hold_pct": sum(held[:10]) * pct,
             "dev_hold_pct": dev * pct,
             "holders": len(held),
+            "unbought_sell_pct": self.unbought_sold * pct,
+            "unbought_sellers": len(self.unbought_sellers),
+            "off_curve_pct": self.off_curve_pct,
+            "launch_mcap": (self.first_price * supply) if self.first_price else 0.0,
         }
 
     def peak_mult(self) -> float:

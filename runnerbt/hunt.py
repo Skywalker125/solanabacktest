@@ -34,7 +34,7 @@ def wilson_lower(hits: int, n: int, z: float = 1.64) -> float:
 
 
 def rows_for(records, cp: int, mult: float = RUNNER_MULT, position: float = 0.5, slippage_pct: float = 1.0,
-             require: Optional[dict] = None):
+             require: Optional[dict] = None, exclude=()):
     """(feature dicts, hit flags, max multiples) for launches tradable at checkpoint cp.
 
     `require` holds hard limits (strategy filter format): launches failing them are never
@@ -112,10 +112,12 @@ class Rule:
         return out
 
 
-def _candidates(np, feats, cols):
+def _candidates(np, feats, cols, exclude=()):
     """Threshold conditions from training quantiles, as (Cond, mask) pairs."""
     out = []
     for k in NUMERIC:
+        if k in exclude:
+            continue
         x = cols[k]
         qs = sorted({float(v) for v in np.quantile(x, QUANTILES)})
         for v in qs:
@@ -126,6 +128,8 @@ def _candidates(np, feats, cols):
             if 0 < le.sum() < len(x):
                 out.append((Cond(k, "<=", v), le))
     for k in BOOLEAN:
+        if k in exclude:
+            continue
         x = cols[k]
         for v in (True, False):
             m = x == v
@@ -201,7 +205,7 @@ def beam_search(np, cands, y, targets, beam: int = 12, depth: int = 4, min_hits:
 def hunt(train_records, test_records, checkpoints, targets=(0.1, 0.2, 0.3, 0.4, 0.5),
          mult: float = RUNNER_MULT, position: float = 0.5, slippage_pct: float = 1.0,
          beam: int = 12, depth: int = 4, min_hits: int = 8, use_model: bool = True, log=print,
-         require: Optional[dict] = None):
+         require: Optional[dict] = None, exclude=()):
     import numpy as np
 
     results: list[Rule] = []
@@ -220,7 +224,7 @@ def hunt(train_records, test_records, checkpoints, targets=(0.1, 0.2, 0.3, 0.4, 
                     "test_n": len(yt), "test_runners": int(yt.sum())}
         log(f"  {cp:>4}s: {len(y):,} train launches, {int(y.sum())} runners ({y.mean():.2%}); "
             f"test {len(yt):,} / {int(yt.sum())}")
-        cands = _candidates(np, f_tr, cols)
+        cands = _candidates(np, f_tr, cols, set(exclude))
         best = beam_search(np, cands, y, targets, beam=beam, depth=depth, min_hits=min_hits)
         for t, b in best.items():
             if not b:

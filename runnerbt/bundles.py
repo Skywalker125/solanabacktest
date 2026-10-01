@@ -8,7 +8,7 @@ import os
 from .hunt import rows_for
 
 METRICS = ["early_slots_pct", "bundle_slot_pct", "max_slot_buyers", "top10_hold_pct", "dev_hold_pct",
-           "launch_block_pct", "bundle_buyers", "holders"]
+           "unbought_sell_pct", "off_curve_pct", "launch_mcap", "launch_block_pct", "bundle_buyers", "holders"]
 # metrics where a higher value means "more bundled" (holders is the opposite)
 HIGHER_IS_WORSE = {m: m != "holders" for m in METRICS}
 

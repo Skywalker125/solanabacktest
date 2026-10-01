@@ -305,3 +305,16 @@ def test_bundle_features_catch_bundles_after_the_launch_block():
     assert f["max_slot_buyers"] == 4
     assert f["top10_hold_pct"] == pytest.approx(6.1)       # 3 x 2% still held + 0.1%
     assert f["holders"] == 4
+
+
+def test_sells_of_tokens_never_bought_are_flagged():
+    p = 3e-8
+    evs = [create(100, block=1000), trade(101, "buy", p, "A", quote=10_000_000 * p, block=1001),
+           # "X" never bought on the curve but sells 5% of supply (allocation or transfer)
+           trade(110, "sell", p, "X", quote=50_000_000 * p, block=1020),
+           trade(200, "buy", p, "Z", block=1300)]
+    (r,) = run(evs, checkpoints=(30,), horizon_s=1000)
+    f = r["snapshots"]["30"]
+    assert f["unbought_sell_pct"] == pytest.approx(5.0)
+    assert f["unbought_sellers"] == 1
+    assert f["launch_mcap"] == pytest.approx(30.0, rel=0.05)
