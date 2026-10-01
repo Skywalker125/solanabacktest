@@ -176,9 +176,13 @@ def _requirements(items) -> dict:
     return out
 
 
-def _start_limit(a) -> dict:
-    """--max-start-usd -> a launch_mcap limit in SOL (market caps are recorded in SOL)."""
-    if not getattr(a, "max_start_usd", None):
+def _usd_limits(a) -> dict:
+    """Dollar limits -> SOL limits (market caps are recorded in SOL):
+    --max-start-usd: first-trade market cap (dev buy included) at most this
+    --min-mcap-usd : market cap at the moment of the buy at least this"""
+    max_start = getattr(a, "max_start_usd", None)
+    min_mcap = getattr(a, "min_mcap_usd", None)
+    if not (max_start or min_mcap):
         return {}
     sol_usd = a.sol_usd
     if not sol_usd:
@@ -186,10 +190,18 @@ def _start_limit(a) -> dict:
         sol_usd = SolPrice.fetch_once()
         if not sol_usd:
             sys.exit("could not fetch the SOL price; pass it with --sol-usd, e.g. --sol-usd 200")
-    limit = a.max_start_usd / sol_usd
-    print(f"start limit: first-trade market cap <= ${a.max_start_usd:,.0f} = {limit:.1f} SOL "
-          f"(SOL ${sol_usd:,.2f})", file=sys.stderr)
-    return {"launch_mcap": {"max": round(limit, 2)}}
+    out: dict = {}
+    if max_start:
+        v = max_start / sol_usd
+        out["launch_mcap"] = {"max": round(v, 2)}
+        print(f"start limit: first-trade market cap <= ${max_start:,.0f} = {v:.1f} SOL (SOL ${sol_usd:,.2f})",
+              file=sys.stderr)
+    if min_mcap:
+        v = min_mcap / sol_usd
+        out["mcap"] = {"min": round(v, 2)}
+        print(f"floor: market cap at the buy >= ${min_mcap:,.0f} = {v:.1f} SOL (SOL ${sol_usd:,.2f})",
+              file=sys.stderr)
+    return out
 
 
 def _rule_to_strategy(rule, name: str, path: str, require: dict):
@@ -253,7 +265,7 @@ def cmd_hunt(a):
     from .strategy import merge_filters as _mf
     if a.skip_protocols:
         require = _mf(require, {"protocol": {"not_in": [x.upper() for x in _csv_list(a.skip_protocols)]}})
-    require = _mf(require, _start_limit(a))
+    require = _mf(require, _usd_limits(a))
     if require:
         sample = next((r["snapshots"] for r in recs if r.get("snapshots")), {})
         snap = next(iter(sample.values()), {})
@@ -363,7 +375,7 @@ def cmd_live(a):
     extra = _requirements(a.require) if a.require else {}
     if a.skip_protocols:
         extra = merge_filters(extra, {"protocol": {"not_in": [x.upper() for x in _csv_list(a.skip_protocols)]}})
-    extra = merge_filters(extra, _start_limit(a))
+    extra = merge_filters(extra, _usd_limits(a))
     for s in strategies:
         s.filters = merge_filters(s.filters, extra)
         if s.model:
@@ -408,6 +420,10 @@ def cmd_inspect(a):
     from .inspect import dump, find_events, quote_report
     if a.quotes:
         print(quote_report(a.input))
+        return
+    if a.mcap_check:
+        from .inspect import mcap_check
+        print(mcap_check(a.input))
         return
     evs = list(find_events(a.input, a.mint, a.protocol, a.action, a.limit))
     print(dump(evs) if evs else "no matching events")
@@ -547,7 +563,9 @@ def main(argv=None):
     r.add_argument("--max-start-usd", type=float,
                    help="never buy a token whose first trade (dev buy included) is above this market cap, "
                         "e.g. 10000")
-    r.add_argument("--sol-usd", type=float, help="SOL price for --max-start-usd (default: fetched now)")
+    r.add_argument("--min-mcap-usd", type=float,
+                   help="never buy below this market cap at the moment of the buy, e.g. 5000")
+    r.add_argument("--sol-usd", type=float, help="SOL price for the $ limits (default: fetched now)")
     r.add_argument("--require", nargs="+", metavar="RULE",
                    help="hard limits, e.g. launch_block_pct<=15 bundle_buyers<=3, or the preset "
                         "anti-bundle (= " + " ".join(ANTI_BUNDLE) + ")")
@@ -583,7 +601,9 @@ def main(argv=None):
     r.add_argument("--max-start-usd", type=float,
                    help="never buy a token whose first trade (dev buy included) is above this market cap, "
                         "e.g. 10000")
-    r.add_argument("--sol-usd", type=float, help="SOL price for --max-start-usd (default: fetched now)")
+    r.add_argument("--min-mcap-usd", type=float,
+                   help="never buy below this market cap at the moment of the buy, e.g. 5000")
+    r.add_argument("--sol-usd", type=float, help="SOL price for the $ limits (default: fetched now)")
     r.add_argument("--trace-dir", default="data/traces", help="where raw events of bought tokens are saved")
     r.add_argument("--trace-minutes", type=float, default=30, help="keep tracing this long after a buy (0 = off)")
     r.add_argument("--require", nargs="+", metavar="RULE",
@@ -598,6 +618,8 @@ def main(argv=None):
     r = sub.add_parser("inspect", help="show raw archive events, or what each launchpad reports as quote")
     r.add_argument("input", nargs="+", help="archive folder(s), e.g. data/slim")
     r.add_argument("--quotes", action="store_true", help="quote mints and launch market caps per protocol")
+    r.add_argument("--mcap-check", action="store_true",
+                   help="per protocol: reported vs. amount-implied vs. engine market cap at launch")
     r.add_argument("--mint")
     r.add_argument("--protocol")
     r.add_argument("--action")

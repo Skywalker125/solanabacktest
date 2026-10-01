@@ -76,3 +76,44 @@ def quote_report(paths, max_creates: int = 20000) -> str:
 
 def dump(events) -> str:
     return "\n".join(json.dumps(e, default=str) for e in events)
+
+
+def mcap_check(paths, max_launches: int = 5000) -> str:
+    """Per launchpad, at each launch's first trades: market cap as reported by the stream, as implied
+    by the executed amounts (quoteAmount / tokenAmount x supply), and as computed by the engine.
+    If the engine column is ~10x off the amounts column, the price-unit correction misfires."""
+    from .engine import EngineConfig, ReplayEngine
+    from .io import iter_events
+    rows: dict = {}
+    done: set = set()
+
+    def on_trade(st, ev):
+        if st.mint in done or st.last_mcap is None:
+            return
+        ta, qa = ev.get("tokenAmount"), ev.get("quoteAmount")
+        if not (ta and qa and float(ta) > 0 and len(ev.get("breakdown") or []) <= 1):
+            return
+        supply = float(st.supply or 1e9)
+        r = rows.setdefault(st.protocol, {"reported": [], "amounts": [], "engine": [], "scale": [], "supply": []})
+        if ev.get("marketCapQuote") is not None:
+            r["reported"].append(float(ev["marketCapQuote"]))
+        r["amounts"].append(float(qa) / float(ta) * supply)
+        r["engine"].append(st.last_mcap)
+        r["scale"].append(st.price_scale or 1.0)
+        r["supply"].append(supply)
+        done.add(st.mint)
+
+    eng = ReplayEngine(EngineConfig(checkpoints=(30,), horizon_s=600), on_trade=on_trade)
+    for ev in iter_events(paths):
+        eng.process(ev)
+        if len(done) >= max_launches:
+            break
+    med = lambda xs: f"{statistics.median(xs):,.2f}" if xs else "-"  # noqa: E731
+    lines = [f"{'protocol':<16}{'launches':>9}{'reported':>14}{'from amounts':>14}{'engine':>12}"
+             f"{'price scale':>13}  {'supply':>18}"]
+    for p, r in sorted(rows.items(), key=lambda kv: -len(kv[1]["amounts"])):
+        lines.append(f"{str(p):<16}{len(r['amounts']):>9}{med(r['reported']):>14}{med(r['amounts']):>14}"
+                     f"{med(r['engine']):>12}{med(r['scale']):>13}  {med(r['supply']):>18}")
+    lines.append("\nMedians of the first clean trade of each SOL-quoted launch, in SOL. 'engine' should match "
+                 "'from amounts' (a SOL launch starts around 25-35 SOL). Market cap = price x supply.")
+    return "\n".join(lines)
