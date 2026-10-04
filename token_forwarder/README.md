@@ -11,7 +11,7 @@ app.moby.win ───┘  {source, address}                    (dedupe per page
 
 | Page | What is detected | Refresh |
 |---|---|---|
-| `https://gmgn.ai/follow?popout=true&target=wallet&chain=sol` | every `a[href="/sol/token/<mint>"]` inside `div.flex.items-center.overflow-hidden` that has not been seen before | page reloads every **5 s** |
+| `https://gmgn.ai/follow?popout=true&target=wallet&chain=sol` | every `a[href="/sol/token/<mint>"]` in the feed (`#GlobalScrollDomId`) that has not been seen before | page reloads every **5 s** |
 | `https://app.moby.win/` | the **first row's** logo `<img class="rounded-full object-cover">`. The mint is pulled from `src` with a regex (`/<networkId>_<mint>_` on token-media.defined.fi, with a generic base58 fallback). Network ids other than Solana (`1399811149`) are skipped | none (MutationObserver + 1 s safety check) |
 
 On the first run, each page only records the tokens it already shows and sends nothing, so you
@@ -39,3 +39,6 @@ allowed to post in them. `GET http://127.0.0.1:8765/health` checks that the serv
    its own window (GMGN's `popout=true` is already one) instead of a hidden tab.
 
 **Reset seen** clears the extension's memory. The next page load then records the current list again.
+
+Debugging: open DevTools on the page and filter the console for `token-forwarder`. You'll see what was
+found, what was sent, and whether the backend could be reached.
