@@ -11,6 +11,7 @@
   #status { margin-left: 8px; color: #666; }
   ul { list-style: none; padding: 0; margin: 8px 0 0; max-height: 220px; overflow-y: auto; font: 11px monospace; }
   li { padding: 2px 0; border-bottom: 1px solid #eee; word-break: break-all; }
+  .muted { color: #666; font-size: 11px; }
   .ok { color: #187a2f; } .err { color: #b3261e; }
 </style>
 </head>
@@ -23,6 +24,11 @@
     <label><input id="enabled_gmgn" type="checkbox"> GMGN</label>
     <label><input id="enabled_moby" type="checkbox"> Moby</label>
   </div>
+  <div class="row">
+    <label>Moby poll (s) <input id="mobyPollSeconds" type="number" min="2" style="width:60px"></label>
+    <label>Max age (min) <input id="mobyMaxAgeMinutes" type="number" min="1" style="width:60px"></label>
+  </div>
+  <div id="mobyStatus" class="muted"></div>
   <button id="save">Save</button>
   <button id="test">Test backend</button>
   <button id="reset" title="Forget seen tokens; next page load re-learns the current list">Reset seen</button>

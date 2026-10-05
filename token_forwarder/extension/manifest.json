@@ -1,14 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Token Forwarder (GMGN + Moby)",
-  "version": "1.0.0",
-  "description": "Detects new Solana token addresses on GMGN follow and Moby and forwards them to a local Telethon backend.",
+  "version": "1.1.0",
+  "description": "Forwards new Solana tokens from the GMGN follow page and the Moby screener API to a local Telethon backend.",
   "permissions": [
-    "storage"
+    "storage",
+    "alarms",
+    "webRequest"
   ],
   "host_permissions": [
     "http://127.0.0.1/*",
-    "http://localhost/*"
+    "http://localhost/*",
+    "https://web-api.mobyscreener.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -26,16 +29,6 @@
       "js": [
         "common.js",
         "gmgn.js"
-      ],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": [
-        "https://app.moby.win/*"
-      ],
-      "js": [
-        "common.js",
-        "moby.js"
       ],
       "run_at": "document_idle"
     }

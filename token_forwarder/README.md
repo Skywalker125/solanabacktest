@@ -4,18 +4,18 @@ A Chrome extension watches two pages for new Solana token addresses. A local Pyt
 then posts each address from your own Telegram account (Telethon), with a separate channel for each page.
 
 ```
-gmgn.ai/follow ─┐  content script     background.js   POST /token        Telethon
+gmgn.ai/follow ─┐  content script       background.js   POST /token        Telethon
                 ├────────────────────►───────────────►  backend/server.py ──► GMGN_CHANNEL
-app.moby.win ───┘  {source, address}                    (dedupe per page) ──► MOBY_CHANNEL
+Moby API poll ──┘  (background.js)                      (dedupe per page) ──► MOBY_CHANNEL
 ```
 
 | Page | What is detected | Refresh |
 |---|---|---|
 | `https://gmgn.ai/follow?popout=true&target=wallet&chain=sol` | every `a[href="/sol/token/<mint>"]` in the feed (`#GlobalScrollDomId`) that has not been seen before | page reloads every **5 s** |
-| `https://app.moby.win/` | the **first row's** logo `<img class="rounded-full object-cover">`. The mint is pulled from `src` with a regex (`/<networkId>_<mint>_` on token-media.defined.fi, with a generic base58 fallback). Network ids other than Solana (`1399811149`) are skipped | none (MutationObserver + 1 s safety check) |
+| Moby screener API (`web-api.mobyscreener.com/.../leaderboard`) | polled from the extension background every **5 s** (setting). The bearer token is captured from the requests the open `app.moby.win` tab makes. A token is posted when it is **new on the list and `token_created` is at most 60 min ago** (setting) | no page refresh. Keep one logged-in Moby tab open so the token stays fresh |
 
-On the first run, each page only records the tokens it already shows and sends nothing, so you
-don't flood the channel. Seen addresses are stored in the extension. The backend also keeps
+On the first run, nothing is sent. GMGN records the tokens already on the page. Moby records the
+list from its first poll after each browser start, so a restart never sends anything. Seen addresses are stored in the extension. The backend also keeps
 `sent_tokens.json`, so each address is posted at most once per channel.
 
 ## Backend
@@ -42,3 +42,6 @@ allowed to post in them. `GET http://127.0.0.1:8765/health` checks that the serv
 
 Debugging: open DevTools on the page and filter the console for `token-forwarder`. You'll see what was
 found, what was sent, and whether the backend could be reached.
+
+Moby status (token captured, last poll, errors) is shown in the popup. If it says `HTTP 401`, reload
+the app.moby.win tab and the new token is picked up automatically.
