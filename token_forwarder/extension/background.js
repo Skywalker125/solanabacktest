@@ -50,17 +50,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 // ---------------------------------------------------------------- Moby ----
 
-// Grab the bearer token from the page's own API calls.
+// Bearer token, way 1: read it off the page's API requests (needs host permission
+// for both the API and app.moby.win). Way 2 is moby-hook.js inside the page.
 chrome.webRequest.onBeforeSendHeaders.addListener(
   (details) => {
     const auth = details.requestHeaders?.find((h) => h.name.toLowerCase() === "authorization");
-    if (auth?.value?.startsWith("Bearer ")) {
-      chrome.storage.local.get("mobyAuth").then(({ mobyAuth }) => {
-        if (mobyAuth !== auth.value) {
-          chrome.storage.local.set({ mobyAuth: auth.value, mobyAuthAt: Date.now(), mobyStatus: "token captured" });
-        }
-      });
-    }
+    if (auth?.value?.startsWith("Bearer ")) storeAuth(auth.value, "headers");
   },
   { urls: [MOBY_API_HOST + "*"] },
   ["requestHeaders", "extraHeaders"]
@@ -84,6 +79,65 @@ async function saveSeen(set) {
   await chrome.storage.session.set({ mobySeen: [...set].slice(-5000) });
 }
 
+async function storeAuth(value, via) {
+  const { mobyAuth } = await chrome.storage.local.get("mobyAuth");
+  if (mobyAuth !== value) {
+    await chrome.storage.local.set({ mobyAuth: value, mobyAuthAt: Date.now(), mobyStatus: `token captured (${via})` });
+  }
+}
+
+// Serialize processing so the page hook and the poller never race on `seen`.
+let chain = Promise.resolve();
+function processEntries(entries, via) {
+  chain = chain.then(() => processEntriesNow(entries, via)).catch(async (err) => {
+    await chrome.storage.local.set({ mobyStatus: `error: ${err}` });
+  });
+  return chain;
+}
+
+async function processEntriesNow(entries, via) {
+  const { enabled_moby } = await chrome.storage.local.get("enabled_moby");
+  if (enabled_moby === false) return;
+  const tokens = (entries || []).filter((e) => e.network === "solana" && SOLANA_RE.test(e.token_address || ""));
+  const stamp = new Date().toLocaleTimeString();
+
+  let seen = await loadSeen();
+  if (!seen) {
+    // Startup: remember everything listed now, post nothing.
+    seen = new Set(tokens.map((e) => e.token_address));
+    await saveSeen(seen);
+    await chrome.storage.local.set({ mobyStatus: `baseline: ${seen.size} tokens via ${via} (${stamp})` });
+    return;
+  }
+
+  const { mobyMaxAgeMinutes } = await settings();
+  const maxAgeMs = Number(mobyMaxAgeMinutes) * 60_000;
+  let changed = false;
+  for (const e of tokens) {
+    const addr = e.token_address;
+    if (seen.has(addr)) continue;
+    const age = Date.now() - createdMs(e.token_created);
+    if (!(age <= maxAgeMs)) {
+      seen.add(addr); // new on the list but too old (or no date): never post it
+      changed = true;
+      continue;
+    }
+    const minutes = Math.max(0, Math.round(age / 60_000));
+    const { ok } = await forward("moby", addr, `${e.token_symbol || "?"}, ${minutes}m old`);
+    if (ok) {
+      seen.add(addr); // failed sends stay unseen and retry next time
+      changed = true;
+    }
+  }
+  if (changed) await saveSeen(seen);
+  await chrome.storage.local.set({ mobyStatus: `ok: ${tokens.length} tokens via ${via} (${stamp})` });
+}
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "moby-auth") storeAuth(msg.value, "page");
+  if (msg?.type === "moby-entries") processEntries(msg.entries, "page");
+});
+
 let polling = false;
 
 async function pollMoby() {
@@ -93,57 +147,24 @@ async function pollMoby() {
     const s = await chrome.storage.local.get(["enabled_moby", "mobyAuth"]);
     if (s.enabled_moby === false) return;
     if (!s.mobyAuth) {
-      await chrome.storage.local.set({ mobyStatus: "no token yet - open app.moby.win" });
+      await chrome.storage.local.set({ mobyStatus: "no token yet - open/reload app.moby.win" });
       return;
     }
-
     const resp = await fetch(MOBY_URL, {
       headers: { accept: "application/json", authorization: s.mobyAuth },
       cache: "no-store",
     });
     if (resp.status === 401 || resp.status === 403) {
-      await chrome.storage.local.set({ mobyStatus: `HTTP ${resp.status} - token expired, reload app.moby.win` });
+      await chrome.storage.local.set({ mobyStatus: `poll HTTP ${resp.status} - token expired, reload app.moby.win` });
       return;
     }
     if (!resp.ok) {
-      await chrome.storage.local.set({ mobyStatus: `HTTP ${resp.status}` });
+      await chrome.storage.local.set({ mobyStatus: `poll HTTP ${resp.status}` });
       return;
     }
-    const entries = (await resp.json())?.entries || [];
-    const tokens = entries.filter((e) => e.network === "solana" && SOLANA_RE.test(e.token_address || ""));
-
-    let seen = await loadSeen();
-    if (!seen) {
-      // Startup: remember everything listed now, post nothing.
-      seen = new Set(tokens.map((e) => e.token_address));
-      await saveSeen(seen);
-      await chrome.storage.local.set({ mobyStatus: `baseline: ${seen.size} tokens (${new Date().toLocaleTimeString()})` });
-      return;
-    }
-
-    const { mobyMaxAgeMinutes } = await settings();
-    const maxAgeMs = Number(mobyMaxAgeMinutes) * 60_000;
-    let changed = false;
-    for (const e of tokens) {
-      const addr = e.token_address;
-      if (seen.has(addr)) continue;
-      const age = Date.now() - createdMs(e.token_created);
-      if (!(age <= maxAgeMs)) {
-        seen.add(addr); // new on the list but too old (or no date): never post it
-        changed = true;
-        continue;
-      }
-      const minutes = Math.max(0, Math.round(age / 60_000));
-      const { ok } = await forward("moby", addr, `${e.token_symbol || "?"}, ${minutes}m old`);
-      if (ok) {
-        seen.add(addr); // failed sends stay unseen and retry next poll
-        changed = true;
-      }
-    }
-    if (changed) await saveSeen(seen);
-    await chrome.storage.local.set({ mobyStatus: `ok: ${tokens.length} tokens (${new Date().toLocaleTimeString()})` });
+    await processEntries((await resp.json())?.entries, "poll");
   } catch (err) {
-    await chrome.storage.local.set({ mobyStatus: `error: ${err}` });
+    await chrome.storage.local.set({ mobyStatus: `poll error: ${err}` });
   } finally {
     polling = false;
   }

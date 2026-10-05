@@ -12,7 +12,7 @@ Moby API poll ──┘  (background.js)                      (dedupe per page) 
 | Page | What is detected | Refresh |
 |---|---|---|
 | `https://gmgn.ai/follow?popout=true&target=wallet&chain=sol` | every `a[href="/sol/token/<mint>"]` in the feed (`#GlobalScrollDomId`) that has not been seen before | page reloads every **5 s** |
-| Moby screener API (`web-api.mobyscreener.com/.../leaderboard`) | polled from the extension background every **5 s** (setting). The bearer token is captured from the requests the open `app.moby.win` tab makes. A token is posted when it is **new on the list and `token_created` is at most 60 min ago** (setting) | no page refresh. Keep one logged-in Moby tab open so the token stays fresh |
+| Moby screener API (`web-api.mobyscreener.com/.../leaderboard`) | polled from the extension background every **5 s** (setting). The bearer token is captured from the open `app.moby.win` tab: a small script in the page (`moby-hook.js`) sees the page's own API calls, and leaderboard responses the page loads are checked too. A token is posted when it is **new on the list and `token_created` is at most 60 min ago** (setting) | no page refresh. Keep one logged-in Moby tab open so the token stays fresh |
 
 On the first run, nothing is sent. GMGN records the tokens already on the page. Moby records the
 list from its first poll after each browser start, so a restart never sends anything. Seen addresses are stored in the extension. The backend also keeps
